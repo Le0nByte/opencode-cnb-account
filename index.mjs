@@ -22,7 +22,7 @@ const NPM = "@ai-sdk/openai-compatible"
 const WEB_BASE = "https://cnb.cool"
 const API_BASE = "https://api.cnb.cool"
 const DEFAULT_MODEL = "deepseek-v4.1-flash"
-const PLUGIN_VERSION = "0.2.1"
+const PLUGIN_VERSION = "0.2.2"
 const USER_AGENT = `opencode-cnb-account/${PLUGIN_VERSION}`
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -248,20 +248,116 @@ function tokenFromAuth(auth) {
 }
 
 /** auth 对象 -> 统一的连接上下文。每个账号只从自己的 auth 派生，绝不用模块级变量存账号状态。 */
-function resolveAccount(auth) {
-  const token = tokenFromAuth(auth) || readLocalCnbToken()?.token || ""
-  const metadata = auth?.metadata && typeof auth.metadata === "object" ? auth.metadata : {}
-  const session = String(metadata.session || (auth?.kind === "cookie" ? token : "") || "").trim()
-  return {
-    token: String(token || "").trim(),
-    session,
-    csrfkey: String(metadata.csrfkey || "").trim(),
-    org: String(auth?.org || metadata.org || "").trim().replace(/^\/+|\/+$/g, ""),
-    repo: String(auth?.repo || metadata.repo || "").trim().replace(/^\/+|\/+$/g, ""),
-    username: String(auth?.accountId || metadata.username || "").trim(),
-  }
+/**
+ * 凭证识别缓存。
+ *
+ * 「粘贴访问令牌」这个方式用的是 magpie 的标准 api 登录：magpie 直接把输入框里的值
+ * 原样存成 { type: "api", key }，插件的 authorize 在这里是拿不到 key 的
+ * （host 的 apiKey() 只把 prompts 的答案作为 inputs 传进来，见 internal/plugin/host.js
+ *  `m.authorize(inputs ?? {})`）。所以「这个值是 PAT 还是 CNBSESSION」只能在运行时识别。
+ *
+ * 识别一次就缓存住：raw 值不变就永远有效。
+ */
+const credentialCache = new Map()
+
+function rawCredentialOf(auth) {
+  return String(auth?.key || auth?.access || "").trim()
 }
 
+/**
+ * 判断一个手柄里存的值是什么，并补齐它需要的派生信息。
+ * 不靠形态猜：先当访问令牌打 /user，不行再当 CNBSESSION 抓首页验长度。
+ */
+async function ensureCredential(auth, { signal } = {}) {
+  const raw = rawCredentialOf(auth)
+  if (!raw) return { kind: "empty", raw: "" }
+
+  const metadata = auth?.metadata && typeof auth.metadata === "object" ? auth.metadata : {}
+  // 一键登录存下来的是 oauth 凭证，metadata 里已经写全了，不用再识别
+  if (metadata.loginMethod === "local" || auth?.type === "oauth") {
+    return {
+      kind: "pat",
+      raw,
+      token: raw,
+      username: String(metadata.username || auth?.accountId || ""),
+      org: String(metadata.org || "").replace(/^\/+|\/+$/g, ""),
+      repo: String(metadata.repo || "").replace(/^\/+|\/+$/g, ""),
+      source: "local",
+    }
+  }
+
+  const cached = credentialCache.get(raw)
+  if (cached) return cached
+
+  const who = await identifyCredential(raw, { signal })
+  const record = { kind: who.kind, raw, checkedAt: Date.now() }
+
+  if (who.kind === "pat") {
+    record.token = raw
+    record.username = String(who.user?.username || "")
+    record.userId = String(who.user?.id || "")
+    const groups = await fetchTopGroups(raw, { signal })
+    record.groups = groups
+    record.org = String(metadata.org || groups[0]?.path || "").replace(/^\/+|\/+$/g, "")
+    record.repo = String(metadata.repo || (record.org ? record.org + "/" + (metadata.repoName || "code") : "")).replace(/^\/+|\/+$/g, "")
+  } else if (who.kind === "session") {
+    record.session = raw
+    record.csrfkey = String(who.csrf?.csrfkey || "")
+    record.csrfToken = String(who.csrf?.csrfToken || "")
+    record.org = String(metadata.org || "").replace(/^\/+|\/+$/g, "")
+    record.repo = String(metadata.repo || "").replace(/^\/+|\/+$/g, "")
+  }
+
+  credentialCache.set(raw, record)
+  return record
+}
+
+/**
+ * 同步版：给不需要 await 的地方用（chat.headers、快照拼装等）。
+ * 缓存里没有就按「访问令牌」处理 —— 这是绝大多数用户粘的东西，
+ * 真要是 CNBSESSION，异步路径（loader / usage / fetch）会先 ensureCredential 把它纠正过来。
+ */
+function cachedCredential(auth) {
+  const raw = rawCredentialOf(auth)
+  if (!raw) return null
+  return credentialCache.get(raw) || null
+}
+
+function resolveAccount(auth) {
+  const metadata = auth?.metadata && typeof auth.metadata === "object" ? auth.metadata : {}
+  const raw = rawCredentialOf(auth)
+  const cached = cachedCredential(auth)
+
+  // 一键登录（oauth）：access 是访问令牌
+  const isOauth = auth?.type === "oauth" || metadata.loginMethod === "local"
+  const localToken = isOauth ? "" : readLocalCnbToken()?.token || ""
+
+  let token = ""
+  let session = ""
+  let csrfkey = String(metadata.csrfkey || "").trim()
+
+  if (isOauth) {
+    token = String(raw || "").trim()
+  } else if (cached) {
+    token = String(cached.token || "").trim()
+    session = String(cached.session || "").trim()
+    if (cached.csrfkey) csrfkey = cached.csrfkey
+  } else {
+    token = String(localToken || raw || "").trim()
+    session = String(metadata.session || "").trim()
+  }
+
+  return {
+    raw,
+    kind: isOauth ? "local" : cached?.kind || (token ? "pat" : session ? "session" : "unknown"),
+    token,
+    session,
+    csrfkey,
+    org: String(auth?.org || metadata.org || cached?.org || "").trim().replace(/^\/+|\/+$/g, ""),
+    repo: String(auth?.repo || metadata.repo || cached?.repo || "").trim().replace(/^\/+|\/+$/g, ""),
+    username: String(auth?.accountId || metadata.username || cached?.username || "").trim(),
+  }
+}
 function pickTransport(account, options) {
   if (options.transport !== "auto") return options.transport
   if (options.relay.url) return "relay"
@@ -1062,6 +1158,7 @@ async function foldSse(response, model) {
 function buildCookieFetch({ account, options, getAuth }) {
   return async function cookieFetch(input, init = {}) {
     const auth = await getAuth()
+    await ensureCredential(auth)
     const live = resolveAccount(auth)
     const session = live.session || account.session
     const csrfkey = live.csrfkey || account.csrfkey
@@ -1141,6 +1238,7 @@ function buildCookieFetch({ account, options, getAuth }) {
 function buildDirectFetch({ account, options, getAuth }) {
   return async function directFetch(input, init = {}) {
     const auth = await getAuth()
+    await ensureCredential(auth)
     const live = resolveAccount(auth)
     const token = live.token || account.token
     const repo = repoPath(live, options)
@@ -1214,60 +1312,29 @@ function authMethods(options, ctx = {}) {
     },
 
     // -----------------------------------------------------------------------
-    // 方式二：一个输入框。PAT 和 CNBSESSION 都接受，插件自己认 —— 用户不需要选。
+    // 方式二：一个输入框。PAT 和 CNBSESSION 都接受，插件在运行时自己认。
+    //
+    // ⚠️ 这里绝对不能加 authorize，也不要加 prompts：
+    //   magpie 的 apiKey() 只把 prompts 的答案作为 inputs 传给 authorize
+    //   （internal/plugin/host.js 里是 `m.authorize(inputs ?? {})`），
+    //   用户在 key 输入框里填的值根本不会进到插件里 —— 加 authorize 只会读到 undefined，
+    //   然后误报「没有读到输入内容」。
+    //   没有 authorize 时 magpie 直接 setAuth({ type: "api", key })，key 原样保存。
+    //   「这是 PAT 还是 CNBSESSION」交给运行时的 ensureCredential() 判断并缓存。
     // -----------------------------------------------------------------------
     {
       type: "api",
-      label: "粘贴访问令牌（CNB 的 PAT，或浏览器的 CNBSESSION）",
-      placeholder: "直接粘贴，不用管是哪一种，插件会自己判断",
-      async authorize(inputs) {
-        const raw = pickCredential(inputs)
-        if (!raw) {
-          return {
-            type: "failed",
-            error: "没有读到输入内容。粘贴 CNB 的访问令牌（在 " + ROUTES.token + " 生成），或者浏览器里 CNBSESSION 的值。",
-          }
-        }
-        const who = await identifyCredential(raw)
-        if (who.kind === "pat") return successFromPat({ options, token: raw, user: who.user })
-        if (who.kind === "session") return successFromSession({ options, session: raw, csrf: who.csrf })
-        return {
-          type: "failed",
-          error:
-            "这个值既不是可用的访问令牌，也不是有效的 CNBSESSION。" +
-            "如果是访问令牌，确认它在 " + ROUTES.token + " 生成、复制完整、没过期；" +
-            "如果是 CNBSESSION，确认 cnb.cool 还处于登录状态（首页拿到 " + (who.htmlLength || 0) + " 字节，登录态应在 200KB 以上）。",
-        }
-      },
+      label: "粘贴访问令牌（PAT 或浏览器 CNBSESSION 都行）",
+      placeholder: "CNB 访问令牌（在 cnb.cool/profile/token 生成）或浏览器里的 CNBSESSION 值",
     },
   ]
 }
 
-/** 从 magpie 传来的 inputs 里把用户输入捞出来。不同版本放的 key 不一样，别赌一个。 */
-function pickCredential(inputs) {
-  if (typeof inputs === "string") return inputs.trim()
-  if (!inputs || typeof inputs !== "object") return ""
-  for (const key of ["key", "token", "value", "secret", "apiKey", "api_key", "credential"]) {
-    const v = inputs[key]
-    if (typeof v === "string" && v.trim()) return v.trim()
-  }
-  for (const v of Object.values(inputs)) {
-    if (typeof v === "string" && v.trim().length > 20) return v.trim()
-  }
-  return ""
-}
-
-/**
- * 一个输入框要同时认两种凭证，所以不靠"长得像"猜，直接都试一遍：
- *   1. 当访问令牌打 /user → 200 就是 PAT
- *   2. 当 CNBSESSION 抓首页 → 有登录态就成立
- * 这样用户粘哪个都能进，不用先想清楚自己手里是什么。
- */
-async function identifyCredential(raw) {
+async function identifyCredential(raw, { signal } = {}) {
   const value = String(raw || "").trim()
   let patError = ""
   try {
-    const user = await fetchUser(value)
+    const user = await fetchUser(value, { signal })
     if (user) return { kind: "pat", user }
     patError = "/user 返回空"
   } catch (error) {
@@ -1276,7 +1343,7 @@ async function identifyCredential(raw) {
 
   let htmlLength = 0
   try {
-    const csrf = await grabCsrf(value)
+    const csrf = await grabCsrf(value, { signal })
     htmlLength = csrf.htmlLength
     if (csrf.looksLoggedIn) return { kind: "session", csrf }
   } catch {
@@ -1292,64 +1359,6 @@ function scopeFor(options, groups) {
   return { org, repo }
 }
 
-async function successFromPat({ options, token, user }) {
-  const groups = await fetchTopGroups(token)
-  const { org, repo } = scopeFor(options, groups)
-  let created = null
-  if (options.autoCreateRepo && org) {
-    const existing = await listRepos(token, org)
-    if (!repoExists(existing, options.repoName)) {
-      created = await createRepo({ token, org, name: options.repoName, visibility: options.visibility })
-    }
-  }
-  return {
-    type: "success",
-    key: token,
-    metadata: {
-      org,
-      repo,
-      username: user.username || "",
-      transport: options.transport,
-      loginMethod: "pat",
-      groups: groups.map((g) => g.path),
-      ...(created?.ok ? { createdRepo: created.path } : {}),
-      ...(created && !created.ok ? { createRepoError: created.error } : {}),
-    },
-  }
-}
-
-function successFromSession({ options, session, csrf }) {
-  const repo = String(options.repo || "").replace(/^\/+|\/+$/g, "")
-  const org = repo.includes("/") ? repo.split("/")[0] : options.org
-  return {
-    type: "success",
-    key: session,
-    metadata: {
-      kind: "cookie",
-      session,
-      csrfkey: csrf.csrfkey || "",
-      csrfToken: csrf.csrfToken || "",
-      org,
-      repo,
-      transport: "cookie",
-      loginMethod: "session",
-      htmlLength: csrf.htmlLength,
-    },
-  }
-}
-
-/**
- * 一键登录的全部逻辑：读本机凭证 → 校验 → 过期就 refresh → 再校验 → 顺手探测组织和仓库。
- * 每一步失败都给出"接下来该做什么"，而不是一句"登录失败"。
- */
-/**
- * 一键登录的全部逻辑：读本机凭证 → 校验 → 过期就 refresh → 再校验 → 顺手探测组织和仓库。
- *
- * ⚠️ 这个方式天生只能登录「~/.cnb/token 里那一个账号」。多账号必须靠「粘贴访问令牌」，
- * 或者在终端 `cnb login` 换成新账号。所以这里必须主动识别"你只是想加第二个账号，
- * 但本机文件还是第一个"的情况 —— 否则 magpie 按 accountId 去重，会静默把旧账号覆盖一遍，
- * 用户看到的是"登录成功"，实际账号没变。
- */
 async function authorizeFromLocal(options, ctx = {}) {
   const local = readLocalCnbToken()
   if (!local || (!local.token && !local.refresh)) {
@@ -1517,6 +1526,7 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
 
       loader: async (getAuth) => {
         const auth = await getAuth()
+        await ensureCredential(auth)
         const account = resolveAccount(auth)
         const transport = pickTransport(account, options)
 
@@ -1545,8 +1555,20 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
       // --- 用量 / 积分 ------------------------------------------------------
       async usage(getAuth) {
         const auth = await getAuth()
+        await ensureCredential(auth)
         const account = resolveAccount(auth)
         if (!account.token) {
+          // 粘进来的值两种都不是 —— 直接把话说清楚，别让用户以为"登录成功了但没数据"。
+          if (account.kind === "invalid") {
+            return {
+              error:
+                "粘贴的凭证无效：既不是可用的访问令牌，也不是有效的 CNBSESSION。" +
+                "访问令牌在 https://cnb.cool/profile/token 生成（复制完整、别含空格）；" +
+                "CNBSESSION 要确认 cnb.cool 还处于登录状态。",
+              signIn: "expired",
+              windows: [],
+            }
+          }
           // 只粘了 CNBSESSION 的账号拿不到额度（api.cnb.cool 要 Bearer 令牌），
           // 这不算登录失效，别把账号标红。
           if (account.session) {
@@ -1603,6 +1625,7 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
       // --- 每日领取 ----------------------------------------------------------
       async checkin(getAuth) {
         const auth = await getAuth()
+        await ensureCredential(auth)
         const account = resolveAccount(auth)
         if (!options.claim.url) {
           return {
@@ -1656,6 +1679,7 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
     provider: {
       id: PROVIDER_ID,
       async models(provider, { auth } = {}) {
+        if (auth) await ensureCredential(auth)
         const account = auth ? resolveAccount(auth) : { session: "", token: "" }
         const transport = pickTransport(account, options)
         const supportsTools = transport !== "cookie"
@@ -1867,6 +1891,9 @@ export const _internal = Object.freeze({
   OAUTH_TOKEN_URL,
   CnbError,
   authorizeFromLocal,
+  cachedCredential,
+  ensureCredential,
+  rawCredentialOf,
   badgesFromUser,
   buildCreditView,
   buildSnapshot,
@@ -1884,7 +1911,6 @@ export const _internal = Object.freeze({
   normalizeExpiry,
   parseTokenText,
   pickAuthEntry,
-  pickCredential,
   pickTransport,
   publishState,
   readLocalCnbToken,

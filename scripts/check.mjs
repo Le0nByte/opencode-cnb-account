@@ -114,10 +114,17 @@ ok("裸 token 仍然可用", mod._internal.parseTokenText("plain-token")?.token 
 ok("refresh 端点指向 cnb.cool/oauth2/token", mod._internal.OAUTH_TOKEN_URL === "https://cnb.cool/oauth2/token", mod._internal.OAUTH_TOKEN_URL)
 
 // 一个输入框要同时认 PAT 和 CNBSESSION，所以从 inputs 里捞值的逻辑要稳
-ok("pickCredential 认 key", mod._internal.pickCredential({ key: "abc" }) === "abc")
-ok("pickCredential 认 token", mod._internal.pickCredential({ token: "abc" }) === "abc")
-ok("pickCredential 接受裸字符串", mod._internal.pickCredential("abc") === "abc")
-ok("pickCredential 空输入返回空串", mod._internal.pickCredential({}) === "" && mod._internal.pickCredential(null) === "")
+// 这次踩过的坑：api 方式一旦带 authorize，magpie 只会把 prompts 的答案传进来
+// （internal/plugin/host.js: m.authorize(inputs ?? {})），用户在 key 输入框里填的值
+// 根本进不到插件里，登录时会误报「没有读到输入内容」。
+const apiMethod = (hooks.auth.methods || []).find((m) => m.type === "api")
+ok("api 登录方式不得有 authorize（否则拿不到用户输入的 key）", typeof apiMethod.authorize !== "function")
+ok("api 登录方式不得有 prompts（用户不该看到「下一步」）", !(apiMethod.prompts || []).length)
+ok("rawCredentialOf 认 key", mod._internal.rawCredentialOf({ key: "abc" }) === "abc")
+ok("rawCredentialOf 认 access", mod._internal.rawCredentialOf({ access: "abc" }) === "abc")
+ok("rawCredentialOf 空输入返回空串", mod._internal.rawCredentialOf({}) === "" && mod._internal.rawCredentialOf(null) === "")
+ok("没识别过的凭证不进缓存", mod._internal.cachedCredential({ key: "never-seen-before" }) === null)
+ok("ensureCredential 是函数", typeof mod._internal.ensureCredential === "function")
 
 // identity_providers 为 null 时，靠特权额度说明兜底出徽章（实测账号就是这样）
 const claimBadges = mod._internal.badgesFromSpecialClaim("天才程序员专属特权", [])

@@ -39,7 +39,7 @@ m quota
 自检：
 
 ```bash
-node scripts/check.mjs     # 170 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
+node scripts/check.mjs     # 173 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
 ```
 
 ---
@@ -56,6 +56,38 @@ node scripts/check.mjs     # 170 项：钩子形状、沙箱约束、徽章判�
 - **组织** —— `/user/groups` 取第一个
 - **仓库** —— `<组织>/<repoName>`，`repoName` 默认 `code`，可在选项里改
 - **通道** —— 你配了 `relay.url` 就走 relay，有 CNBSESSION 就走 cookie，否则 direct
+
+### 为什么「粘贴访问令牌」不在登录那一刻校验
+
+因为 magpie 的 `api` 登录方式有个硬约束：**插件在 `authorize` 里拿不到用户在 key 输入框里填的值**。
+
+看 magpie 自己的宿主实现（`internal/plugin/host.js`，编译进二进制，可以 `strings` 出来）：
+
+```js
+async function apiKey({ provider, method, inputs, key, account, proxy }) {
+  ...
+  if (typeof m.authorize !== "function") {
+    setAuth(at, { type: "api", key, ...md })        // 没有 authorize：key 原样存
+    return { ok: true, provider, account: settle(provider, at) }
+  }
+  const r = await m.authorize(inputs ?? {})         // 有 authorize：只给 prompts 的答案
+  ...
+}
+```
+
+`key` 和 `inputs` 是两个独立参数：`inputs` 只有 `prompts` 的答案。所以：
+
+- 给 `api` 方式加 `authorize` → 读到的输入永远是 `undefined` → 误报「没有读到输入内容」（v0.2.1 就是这个错）
+- 靠 `prompts` 收集 → 用户又要多点一次「下一步」
+
+所以 v0.2.2 起 `api` 方式**不带 `authorize`、不带 `prompts`**，magpie 直接把输入框的值原样存成 `{ type: "api", key }`；「这是 PAT 还是 CNBSESSION」交给运行时的 `ensureCredential()` 判断一次并缓存：
+
+1. 先当访问令牌打 `/user` → 200 就是 PAT，顺便拿到 `username` 和组织列表
+2. 不行再当 CNBSESSION 抓首页 → 登录态首页 200KB+，成立就用它跑 AI 通道
+3. 两种都不是 → 账号卡片上直接显示「粘贴的凭证无效」，而不是假装成功
+
+代价是校验发生在第一次读额度时（点开账号卡片 / `magpie quota`），不在点「保存」的瞬间。这是 magpie 登录协议的限制，不是插件偷懒。
+
 
 ### 访问令牌从哪来
 
@@ -342,7 +374,7 @@ opencode-cnb-account/
 │   │                   state.js 是宿主写出的运行时快照，已在 .gitignore 里
 │   └── icon.svg          插件图标
 ├── scripts/
-│   ├── check.mjs         170 项自检
+│   ├── check.mjs         173 项自检
 │   └── push.mjs          一条命令推到 GitHub
 ├── PUSH-TO-GITHUB.md     推送的三种方式（HTTPS token / SSH / gh CLI）
 ├── .gitignore .gitattributes   统一 LF（Windows 上编辑不会污染模板字符串）
