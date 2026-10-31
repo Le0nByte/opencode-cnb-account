@@ -2,7 +2,7 @@
 
 这个目录已经是 `main` 分支的 git 仓库，并且有一个已完成的提交。**只差一个远程地址和一份凭证** —— 这台机器上没有 `gh` CLI、没有 `GITHUB_TOKEN`，`~/.ssh/id_ed25519` 也没被 GitHub 授权（`git@github.com: Permission denied (publickey)`），所以远程那一步留给你填。
 
-把下面命令里的 `OWNER` 换成你的 GitHub 用户名，`REPO` 换成仓库名（建议就叫 `opencode-cnb-account`）。
+把下面命令里的 `你的用户名` 换成你的 GitHub 用户名，`REPO` 换成仓库名（建议就叫 `opencode-cnb-account`）。
 
 ---
 
@@ -12,7 +12,7 @@
 
 ```bash
 cd opencode-cnb-account
-git remote add origin https://github.com/OWNER/REPO.git
+git remote add origin https://github.com/411304344/opencode-cnb-account.git
 git push -u origin main
 # 提示密码时粘贴 token（不是账号密码）
 ```
@@ -20,7 +20,7 @@ git push -u origin main
 或者一次性把 token 写进 URL（注意会留在 shell history / git config 里）：
 
 ```bash
-git remote add origin https://<TOKEN>@github.com/OWNER/REPO.git
+git remote add origin https://<TOKEN>@github.com/411304344/opencode-cnb-account.git
 git push -u origin main
 ```
 
@@ -42,8 +42,8 @@ cat ~/.ssh/id_ed25519.pub
 
 ```bash
 cd opencode-cnb-account
-ssh -T git@github.com          # 应回 "Hi OWNER! You've successfully authenticated"
-git remote add origin git@github.com:OWNER/REPO.git
+ssh -T git@github.com          # 应回 "Hi 你的用户名! You've successfully authenticated"
+git remote add origin git@github.com:411304344/opencode-cnb-account.git
 git push -u origin main
 ```
 
@@ -67,10 +67,10 @@ gh repo edit --add-topic magpie-plugin --add-topic opencode-plugin --add-topic c
 
 ```bash
 # 直接从 GitHub 装（Bun 拉仓库当前代码）
-magpie plugin add github:OWNER/REPO
+magpie plugin add github:411304344/opencode-cnb-account
 
 # 或先克隆再本地加载（改代码立刻生效）
-git clone https://github.com/OWNER/REPO.git
+git clone https://github.com/411304344/opencode-cnb-account.git
 magpie plugin add ./REPO
 ```
 
@@ -92,13 +92,13 @@ npm publish --access public
 ```bash
 git log --oneline --stat | head -40
 git remote -v
-curl -s https://api.github.com/repos/OWNER/REPO | head -5     # 确认仓库真的建出来了
+curl -s https://api.github.com/repos/411304344/opencode-cnb-account | head -5     # 确认仓库真的建出来了
 ```
 
 ## 待填占位符
 
 | 占位符 | 换成 |
 |---|---|
-| `OWNER` | 你的 GitHub 用户名或组织名 |
+| `你的用户名` | 你的 GitHub 用户名或组织名 |
 | `REPO` | 仓库名，建议 `opencode-cnb-account` |
 | `<TOKEN>` | 带 `repo` 权限的 PAT |

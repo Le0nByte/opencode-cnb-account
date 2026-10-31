@@ -302,8 +302,8 @@ opencode-cnb-account/
 **推到 GitHub 就能被装：**
 
 ```bash
-node scripts/push.mjs https://github.com/OWNER/REPO.git   # 或看 PUSH-TO-GITHUB.md 走 SSH / gh
-magpie plugin add github:OWNER/REPO                       # 别人这样装
+node scripts/push.mjs https://github.com/411304344/opencode-cnb-account.git   # 或看 PUSH-TO-GITHUB.md 走 SSH / gh
+magpie plugin add github:411304344/opencode-cnb-account                       # 别人这样装
 ```
 
 **进 magpie 的「发现」页**需要两件事，仓库里都已备好：
@@ -312,7 +312,7 @@ magpie plugin add github:OWNER/REPO                       # 别人这样装
 2. 给仓库打 `magpie-plugin` topic：
 
 ```bash
-gh repo edit OWNER/REPO --add-topic magpie-plugin --add-topic opencode-plugin --add-topic cnb
+gh repo edit 411304344/opencode-cnb-account --add-topic magpie-plugin --add-topic opencode-plugin --add-topic cnb
 ```
 
 关键词也符合搜索规则（名字或 `keywords` 里同时含 `opencode` + `auth|plugin|provider` 之一）。
