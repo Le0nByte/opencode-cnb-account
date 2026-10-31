@@ -126,13 +126,14 @@
     var sub = $("sub")
     if (sub) {
       var parts = []
-      if (a.username) parts.push("@" + a.username)
+      // 名字已经是 nickname 时才补 @username，否则会显示成 "xiaopangdev / @xiaopangdev"
+      if (a.username && a.nickname) parts.push("@" + a.username)
       if (st.scope && st.scope.repo) parts.push("仓库 " + st.scope.repo)
       else if (st.scope && st.scope.org) parts.push("组织 " + st.scope.org)
-      else parts.push("未绑定仓库")
-      parts.push("通道 " + (st.transport || "auto"))
+      else if (a.username) parts.push("未绑定仓库")
+      if (a.username) parts.push("通道 " + (st.transport || "auto"))
       if (st.generatedAt) parts.push("快照 " + new Date(st.generatedAt).toLocaleString("zh-CN"))
-      sub.textContent = parts.join(" · ")
+      sub.textContent = parts.join(" · ") || "还没登录"
     }
 
     var avatar = $("avatar")
@@ -149,7 +150,8 @@
       } else {
         list.forEach(function (b) {
           var span = el("span", "badge " + (b.tone || "success"), b.label)
-          if (b.tooltip) span.title = b.tooltip
+          var tip = b.tooltip || (b.source ? "来源：" + b.source : "")
+          if (tip) span.title = tip
           badges.appendChild(span)
         })
       }
@@ -271,14 +273,45 @@
     }
   }
 
+  // --- 未登录引导 ---------------------------------------------------------
+  function renderOnboarding(st) {
+    var box = $("onboarding")
+    if (!box) return
+    var logged = Boolean(st && st.account && st.account.username)
+    box.hidden = logged
+
+    var link = $("link-token")
+    if (link) {
+      var tokenUrl = (st && st.routes && st.routes.token) || "https://cnb.cool/profile/token"
+      link.setAttribute("href", tokenUrl)
+      link.textContent = tokenUrl.replace(/^https?:\/\//, "")
+    }
+  }
+
   // --- 一键操作 -----------------------------------------------------------
   function bindActions(st) {
     var routes = st.routes || {}
+    var tokenUrl = routes.token || "https://cnb.cool/profile/token"
 
     var login = $("btn-login")
     if (login) {
       login.addEventListener("click", function () {
         copyText("magpie plugin login cnb")
+      })
+    }
+
+    var copyLogin = $("btn-copy-login")
+    if (copyLogin) {
+      copyLogin.addEventListener("click", function () {
+        copyText("magpie plugin login cnb")
+      })
+    }
+
+    var linkToken = $("link-token")
+    if (linkToken) {
+      linkToken.addEventListener("click", function (ev) {
+        ev.preventDefault()
+        openUrl(tokenUrl)
       })
     }
 
@@ -355,6 +388,7 @@
   function renderAll(st) {
     if (!st) return
     renderAccount(st)
+    renderOnboarding(st)
     renderCredit(st)
     renderEntrances(st)
     renderHints(st)

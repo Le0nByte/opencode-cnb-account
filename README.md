@@ -44,21 +44,41 @@ node scripts/check.mjs     # 146 项：钩子形状、沙箱约束、徽章判�
 
 ---
 
-## 2. 三种登录方式
+## 2. 登录：两个方式，都只要一步
 
-| 方式 | 适用 | 拿到什么 | 注意 |
-|---|---|---|---|
-| **一键登录**（oauth） | 本机已经 `cnb login` 过 | `CNB_TOKEN` 环境变量 / `~/.cnb/token` | 只读本机文件，不联网登录；找不到时会提示去装 `@cnbcool/cnb-cli` |
-| **个人访问令牌 PAT**（api） | 有 PAT，走 API | `/user`、`/user/groups`、额度、建仓 | PAT 需要 `account-profile:r` + `group-resource:rw` 才能建仓 |
-| **浏览器登录态 CNBSESSION**（api） | 要用路线 B 直连 AI | `CNBSESSION` + `csrfkey` | 会先抓一次 `cnb.cool/` 验证：匿名首页约 145KB、登录态约 350KB，长度不对直接判失败 |
+| 方式 | 你需要做的 | 说明 |
+|---|---|---|
+| **一键登录**（oauth） | 什么都不用填 | 读本机已有的 CNB 凭证：`CNB_TOKEN` 环境变量 / `~/.cnb/token` / `~/.config/cnb/token`。**令牌过期会自动用 `refresh_token` 续期，并把新令牌写回 `~/.cnb/token`**（写前备份成 `token.bak-YYYYMMDD`） |
+| **粘贴访问令牌**（api） | 粘一个值 | **PAT 和 CNBSESSION 都能粘，插件自己判断是哪种** —— 你不用先想清楚手里是什么 |
 
-登录时还会问三个问题（可留空）：
+**没有「下一步」按钮。** 第一版给了三个问题（组织 / 仓库 / 通道）逐个下一步，纯属自找麻烦；现在这三项全自动：
 
-- `org` —— 顶级组织 slug，留空自动取 `/user/groups` 的第一个
-- `repo` —— 仓库路径 `org/repo`，AI 通道要用
-- `transport` —— AI 通道，见下一节
+- **组织** —— `/user/groups` 取第一个
+- **仓库** —— `<组织>/<repoName>`，`repoName` 默认 `code`，可在选项里改
+- **通道** —— 你配了 `relay.url` 就走 relay，有 CNBSESSION 就走 cookie，否则 direct
 
-登录成功后，账号卡片上的 `plan` 会显示认证徽章串（例如 `天才程序员 · 高校老师`），`user` 显示 CNB 用户名。
+### 访问令牌从哪来
+
+打开 <https://cnb.cool/profile/token> 生成一个，复制，粘进 magpie 那个唯一的输入框。就这些。
+
+只想要 AI 通道、不关心徽章和额度的话，浏览器里 `CNBSESSION` 的值也可以粘在同一个框里 —— 插件会认出它是登录态，走 cookie 通道。
+
+### 一键登录为什么会读到「过期」
+
+CNB 的访问令牌只有 8 小时（`expires_in ≈ 28800`），`cnb-cli` 把它连同 `refresh_token` 一起写在 `~/.cnb/token`。插件读到过期的 `access_token` 时会：
+
+1. 拿 `refresh_token` 去 `POST https://cnb.cool/oauth2/token`（`grant_type=refresh_token`，`client_id=cnb_cli`）换新的
+2. 用新令牌调 `/user` 验证
+3. 把新令牌写回 `~/.cnb/token`，`cnb-cli` 那边也跟着好
+
+所以「网页上登录了但插件读不到」通常是两种情况，现在都有明确反馈：
+
+- **`~/.cnb/token` 不存在** —— 说明没跑过 `cnb login`（网页登录 ≠ CLI 登录），失败信息会列出所有找过的路径
+- **文件存在但令牌过期** —— 自动续期（这是第一版真正的 bug：cnb-cli 的令牌嵌在 `auths["cnb.cool"]` 下面，旧解析器只看顶层字段，读出来是空串）
+
+登录成功后，账号卡片的 `plan` 显示认证徽章串（如 `天才程序员 · 高校老师`），`user` 显示 CNB 用户名，`balance` 显示总额度。
+
+> 徽章来源：`/user` 的 `identity_providers`；它为空时退回 `/charge/special-amount` 的 `credit_desc`（实测有个「天才程序员专属特权」的账号 `identity_providers` 就是 `null`，只能靠这条兜底）。
 
 ---
 
@@ -240,6 +260,9 @@ magpie 的插件页面跑在 `sandbox="allow-scripts"` + `connect-src 'none'` �
 | `user.verified ≠ 0` | 已实名（附有效期） |
 
 对照的是 cnb.cool 前端 bundle 里的判定顺序：多个 provider 可以同时显示，`genius + edu` 会合并成「天才X」而不是显示两枚。
+
+**兜底：`identity_providers` 为 `null` 时**，插件会从 `/charge/special-amount` 的 `credit_desc` 里再认一次（`天才` → 天才程序员、`高校` → 高校认证、`TDP` → TDP 会员）。这不是多此一举：实测有个账号的 `identity_providers` 返回 `null`，但额度说明明确写着「天才程序员专属特权」，徽章只能从这里取。
+
 
 ---
 

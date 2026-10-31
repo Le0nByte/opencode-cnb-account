@@ -22,6 +22,28 @@
 
   <div class="cnb-badges" id="badges"></div>
 
+  <!-- 未登录时显示的引导。登录方式只有两个，都不需要"下一步"。 -->
+  <section class="cnb-section onboarding" id="onboarding" hidden>
+    <h2>还没登录，两种方式，都只要一步</h2>
+    <ol class="steps">
+      <li>
+        <b>一键登录</b>
+        <span>本机装过 <code>cnb-cli</code> 并跑过 <code>cnb login</code>，直接点 magpie 里这个供应商的「一键登录」就能进。令牌过期会自动续期。</span>
+      </li>
+      <li>
+        <b>粘贴访问令牌</b>
+        <span>没有 CLI 就走这条：先打开
+          <a class="entry" id="link-token" href="#" target="_blank" rel="noreferrer">cnb.cool/profile/token</a>
+          生成一个令牌，复制，回到 magpie 点「粘贴访问令牌」粘进去。
+          <i>浏览器里那段 CNBSESSION 也能粘在同一个框里，但它只能跑 AI 通道，看不到额度和徽章。</i>
+        </span>
+      </li>
+    </ol>
+    <div class="actions">
+      <button class="cnb primary" id="btn-copy-login">复制登录命令（终端用）</button>
+    </div>
+  </section>
+
   <section class="cnb-section">
     <h2>积分额度（当月）</h2>
     <div class="cnb-grid" id="stats"></div>

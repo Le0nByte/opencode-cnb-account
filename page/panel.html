@@ -20,6 +20,16 @@
 
   <div class="cnb-badges" id="badges"></div>
 
+  <section class="cnb-section onboarding" id="onboarding" hidden>
+    <h2>还没登录</h2>
+    <ol class="steps">
+      <li><b>一键登录</b><span>本机跑过 <code>cnb login</code> 就直接点。</span></li>
+      <li><b>粘贴访问令牌</b><span>在
+        <a class="entry" id="link-token" href="#" target="_blank" rel="noreferrer">cnb.cool/profile/token</a>
+        生成后粘进来，一个框搞定。</span></li>
+    </ol>
+  </section>
+
   <section class="cnb-section">
     <h2>当月积分</h2>
     <div class="cnb-grid" id="stats"></div>
@@ -41,7 +51,7 @@
 
   <section class="cnb-section">
     <div class="actions">
-      <button class="cnb primary" id="btn-login">一键登录</button>
+      <button class="cnb primary" id="btn-copy-login">一键登录</button>
       <button class="cnb" id="btn-repo">创建仓库</button>
       <button class="cnb" id="btn-claim">领取积分</button>
       <button class="cnb" id="btn-quota">额度页</button>

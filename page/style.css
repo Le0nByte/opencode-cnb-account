@@ -125,8 +125,28 @@ button.cnb.primary { background: var(--cnb-accent); border-color: var(--cnb-acce
 .err { color: var(--cnb-bad); }
 .mono { font-family: ui-monospace, Consolas, monospace; }
 
+/* 未登录引导：首次用的人要能一眼看懂下一步做什么 */
+.onboarding {
+  padding: 14px 16px;
+  border: 1px solid rgba(47, 107, 255, .32);
+  border-radius: 12px;
+  background: rgba(47, 107, 255, .06);
+}
+.onboarding > h2 { color: var(--cnb-accent); text-transform: none; letter-spacing: 0; font-size: 12.5px; }
+ol.steps { margin: 6px 0 0; padding-left: 20px; }
+ol.steps li { margin-bottom: 9px; font-size: 12px; line-height: 1.6; }
+ol.steps li > b { display: block; font-size: 12.5px; margin-bottom: 1px; }
+ol.steps li > span { color: var(--cnb-dim); }
+ol.steps li > span i { display: block; margin-top: 3px; font-style: normal; opacity: .82; }
+ol.steps code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px; padding: 1px 4px; border-radius: 4px;
+  background: rgba(127, 127, 127, .16);
+}
+
 /* 面板（slot: provider）里的紧凑版本：去掉每行的说明副标题，只留项目 / 状态 / 入口 / 奖励 */
 body.cnb-panel { padding: 12px 14px 16px; }
 body.cnb-panel .cnb-section:first-of-type { margin-top: 12px; }
 body.cnb-panel table.entries .desc,
 body.cnb-panel table.entries br { display: none; }
+body.cnb-panel ol.steps li { margin-bottom: 6px; }

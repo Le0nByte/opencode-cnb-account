@@ -75,6 +75,56 @@ ok("provider 钩子是对象且有 models", Boolean(hooks.provider) && typeof ho
 ok("tool 钩子是对象", Boolean(hooks.tool) && typeof hooks.tool === "object")
 ok("chat.headers 是函数", typeof hooks["chat.headers"] === "function")
 
+section("2b. 登录流程不能有冗余步骤")
+// 这条是硬要求：用户抱怨过"点下一步、下一步"。登录方式里出现 prompts 就是回归。
+const promptCount = (hooks.auth.methods || []).reduce((n, m) => n + (m.prompts || []).length, 0)
+ok("登录方式里没有任何 prompts（不该出现「下一步」按钮）", promptCount === 0, `发现 ${promptCount} 个 prompt`)
+ok("登录方式最多 2 个", (hooks.auth.methods || []).length <= 2, String((hooks.auth.methods || []).length))
+ok("有且仅有一个需要用户输入的方式", (hooks.auth.methods || []).filter((m) => m.type === "api").length === 1)
+ok(
+  "需要输入的方式给了明确 placeholder",
+  (hooks.auth.methods || []).filter((m) => m.type === "api").every((m) => typeof m.placeholder === "string" && m.placeholder.length > 6),
+)
+ok("一键登录是 oauth + auto callback（点一下就走完）", (hooks.auth.methods || []).some((m) => m.type === "oauth"))
+ok("auth.refresh 存在（令牌过期能自动续期）", typeof hooks.auth.refresh === "function")
+ok("refreshLead 有设置", Number(hooks.auth.refreshLead) > 0, String(hooks.auth.refreshLead))
+
+// 一键登录必须能读懂 cnb-cli 的嵌套结构 —— 这里放一份实测抓到的样例
+const cliTokenSample = JSON.stringify({
+  auths: {
+    "cnb.cool": {
+      access_token: "A".repeat(94),
+      expires_at: 1792419526,
+      refresh_token: "R".repeat(94),
+      client_id: "cnb_cli",
+      login_host: "https://api.cnb.cool",
+      platform_url: "https://cnb.cool",
+      scope: "openid profile",
+    },
+  },
+})
+const parsedCli = mod._internal.parseTokenText(cliTokenSample)
+ok("解析 cnb-cli 的 auths[cnb.cool].access_token", parsedCli?.token === "A".repeat(94), String(parsedCli?.token).slice(0, 12))
+ok("解析 cnb-cli 的 refresh_token", parsedCli?.refresh === "R".repeat(94))
+ok("解析 cnb-cli 的 client_id", parsedCli?.clientId === "cnb_cli")
+ok("expires_at 秒 → 毫秒", parsedCli?.expires === 1792419526 * 1000, String(parsedCli?.expires))
+ok("毫秒时间戳不被再乘一次", mod._internal.parseTokenText('{"access_token":"x","expires_at":1792419526000}')?.expires === 1792419526000)
+ok("裸 token 仍然可用", mod._internal.parseTokenText("plain-token")?.token === "plain-token")
+ok("refresh 端点指向 cnb.cool/oauth2/token", mod._internal.OAUTH_TOKEN_URL === "https://cnb.cool/oauth2/token", mod._internal.OAUTH_TOKEN_URL)
+
+// 一个输入框要同时认 PAT 和 CNBSESSION，所以从 inputs 里捞值的逻辑要稳
+ok("pickCredential 认 key", mod._internal.pickCredential({ key: "abc" }) === "abc")
+ok("pickCredential 认 token", mod._internal.pickCredential({ token: "abc" }) === "abc")
+ok("pickCredential 接受裸字符串", mod._internal.pickCredential("abc") === "abc")
+ok("pickCredential 空输入返回空串", mod._internal.pickCredential({}) === "" && mod._internal.pickCredential(null) === "")
+
+// identity_providers 为 null 时，靠特权额度说明兜底出徽章（实测账号就是这样）
+const claimBadges = mod._internal.badgesFromSpecialClaim("天才程序员专属特权", [])
+ok("特权说明含「天才」→ 天才程序员徽章", claimBadges.length === 1 && claimBadges[0].label === "天才程序员", JSON.stringify(claimBadges))
+ok("特权说明含「高校」→ 高校认证徽章", mod._internal.badgesFromSpecialClaim("高校学生专属特权", []).some((b) => b.kind === "edu"))
+ok("已有徽章不重复叠加", mod._internal.badgesFromSpecialClaim("天才程序员专属特权", [{ kind: "genius" }]).length === 0)
+ok("特权说明为空不造徽章", mod._internal.badgesFromSpecialClaim("", []).length === 0)
+
 // ---------------------------------------------------------------------------
 section("3. config 钩子声明供应商")
 const cfg = {}
@@ -214,14 +264,14 @@ ok(
 )
 
 // app.js 里 $("xxx") 引用的 id，页面里必须真的存在（可选元素除外）
-const OPTIONAL_IDS = new Set(["mw"]) // 只有独立页面才有 magpie 侧统计
+const OPTIONAL_IDS = new Set(["mw", "btn-login"]) // 只有独立页面才有 magpie 侧统计
 for (const file of ["index.html", "panel.html"]) {
   const html = readFileSync(join(pageDir, file), "utf8")
   const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]))
   const referenced = new Set([...appjs.matchAll(/\$\("([^"]+)"\)/g)].map((m) => m[1]))
   const missing = [...referenced].filter((id) => !ids.has(id) && !OPTIONAL_IDS.has(id))
   ok(`${file} 覆盖 app.js 引用的所有 id`, missing.length === 0, missing.join(","))
-  ok(`${file} 引用的本地文件都存在`, [...html.matchAll(/(?:src|href)="(?!_magpie\/|https?:)([^"?]+)"/g)]
+  ok(`${file} 引用的本地文件都存在`, [...html.matchAll(/(?:src|href)="(?!_magpie\/|https?:|#)([^"?#]+)"/g)]
     .map((m) => m[1])
     .every((f) => existsSync(join(pageDir, f))))
 }

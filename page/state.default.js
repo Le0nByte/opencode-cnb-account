@@ -9,7 +9,7 @@
  */
 window.__CNB_STATE__ = {
   generatedAt: "",
-  plugin: { name: "opencode-cnb-account", version: "0.1.0", provider: "cnb" },
+  plugin: { name: "opencode-cnb-account", version: "0.2.0", provider: "cnb" },
   transport: "auto",
   account: {
     username: "",
@@ -55,7 +55,8 @@ window.__CNB_STATE__ = {
     newRepo: "https://cnb.cool/new/repos",
     newGroup: "https://cnb.cool/new/groups",
     newMission: "https://cnb.cool/new/missions",
-    profile: "https://cnb.cool/profile"
+    profile: "https://cnb.cool/profile",
+    token: "https://cnb.cool/profile/token"
   },
   realnameVerified: false,
   signIn: "",

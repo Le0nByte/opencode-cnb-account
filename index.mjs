@@ -11,7 +11,7 @@
 //  4. 上游只吃 stream:true；非流式请求由本插件把 SSE 折叠成一次性 JSON。
 //  5. 所有请求必须带 User-Agent，否则 Cloudflare 回 403 error 1010。
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -22,7 +22,7 @@ const NPM = "@ai-sdk/openai-compatible"
 const WEB_BASE = "https://cnb.cool"
 const API_BASE = "https://api.cnb.cool"
 const DEFAULT_MODEL = "deepseek-v4.1-flash"
-const PLUGIN_VERSION = "0.1.0"
+const PLUGIN_VERSION = "0.2.0"
 const USER_AGENT = `opencode-cnb-account/${PLUGIN_VERSION}`
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -41,6 +41,7 @@ const ROUTES = Object.freeze({
   newGroup: `${WEB_BASE}/new/groups`, // 新建组织
   newMission: `${WEB_BASE}/new/missions`, // 新建任务集
   profile: `${WEB_BASE}/profile`,
+  token: `${WEB_BASE}/profile/token`, // 访问令牌管理（bundle 里的 /profile/token/create 的父路由）
 })
 
 // ---------------------------------------------------------------------------
@@ -125,45 +126,122 @@ function normaliseOptions(raw) {
   return out
 }
 
+/**
+ * cnb-cli 写出来的 ~/.cnb/token 长这样（实测结构，别想当然）：
+ *
+ *   {
+ *     "auths": {
+ *       "cnb.cool": {
+ *         "access_token": "…",      // 94 字符，8 小时
+ *         "refresh_token": "…",
+ *         "expires_at": 1792419526, // 秒
+ *         "client_id": "cnb_cli",
+ *         "login_host": "https://api.cnb.cool",
+ *         "platform_url": "https://cnb.cool",
+ *         "scope": "…"
+ *       }
+ *     }
+ *   }
+ *
+ * 早期版本只看顶层 access_token 会读成空串 —— 这就是「网页都登录了插件却读不到」的原因。
+ */
+function pickAuthEntry(json) {
+  const auths = json?.auths
+  if (auths && typeof auths === "object") {
+    const direct = auths["cnb.cool"]
+    if (direct && typeof direct === "object") return direct
+    for (const value of Object.values(auths)) {
+      if (value && typeof value === "object" && (value.access_token || value.token || value.access)) return value
+    }
+  }
+  for (const key of ["cnb", "cnb.cool", "oauth", "token"]) {
+    const value = json?.[key]
+    if (value && typeof value === "object" && (value.access_token || value.token || value.access)) return value
+  }
+  return null
+}
+
+/** 过期时间统一成毫秒。cnb-cli 写秒，别的实现可能写毫秒。 */
+function normalizeExpiry(value) {
+  const n = Number(value) || 0
+  if (!n) return 0
+  return n < 1e12 ? n * 1000 : n
+}
+
 function parseTokenText(raw) {
   const text = String(raw || "").trim()
   if (!text) return null
   try {
     const json = JSON.parse(text)
     if (json && typeof json === "object") {
+      const entry = pickAuthEntry(json) || json
+      const access = entry.access_token || entry.access || entry.token || entry.key || ""
       return {
-        token: json.access_token || json.access || json.token || json.key || "",
-        refresh: json.refresh_token || json.refresh || "",
-        expires: json.expires_at ? Number(json.expires_at) * 1000 : Number(json.expires || 0),
-        accountId: json.username || json.login || "",
+        token: String(access || ""),
+        refresh: String(entry.refresh_token || entry.refresh || ""),
+        expires: normalizeExpiry(entry.expires_at ?? entry.expires),
+        clientId: String(entry.client_id || "cnb_cli"),
+        accountId: String(entry.username || entry.login || json.username || ""),
+        source: "",
       }
     }
   } catch {
     /* cnb-cli 早期版本写的是裸 token */
   }
-  return { token: text, refresh: "", expires: 0, accountId: "" }
+  return { token: text, refresh: "", expires: 0, clientId: "cnb_cli", accountId: "", source: "" }
+}
+
+function cliTokenFile() {
+  return join(homedir(), ".cnb", "token")
 }
 
 function readLocalCnbToken() {
   const candidates = [
     process.env.CNB_TOKEN_FILE,
-    join(homedir(), ".cnb", "token"),
+    cliTokenFile(),
     join(homedir(), ".config", "cnb", "token"),
-  ].filter(Boolean)
+    join(process.env.APPDATA || "", "cnb", "token"),
+    join(process.env.LOCALAPPDATA || "", "cnb", "token"),
+  ].filter((p) => p && !p.startsWith("cnb") && p.length > 8)
   for (const file of candidates) {
     try {
       if (existsSync(file)) {
         const parsed = parseTokenText(readFileSync(file, "utf8"))
-        if (parsed?.token) return { ...parsed, source: file }
+        if (parsed?.token || parsed?.refresh) return { ...parsed, source: file }
       }
     } catch {
-      /* ignore */
+      /* 读不到就试下一个 */
     }
   }
-  const env = String(process.env.CNB_TOKEN || "").trim()
-  if (env) return { token: env, refresh: "", expires: 0, accountId: "", source: "CNB_TOKEN" }
+  const env = String(process.env.CNB_TOKEN || process.env.CNB_CLI_TOKEN || "").trim()
+  if (env) return { token: env, refresh: "", expires: 0, clientId: "cnb_cli", accountId: "", source: "CNB_TOKEN 环境变量" }
   return null
 }
+
+/**
+ * 一键登录失败时最有用的一句话：到底找过哪些位置、每个位置怎么了。
+ * 新人看到「读不到」只会一脸问号。
+ */
+function describeLocalTokenProbe() {
+  const lines = []
+  const files = [process.env.CNB_TOKEN_FILE, cliTokenFile(), join(homedir(), ".config", "cnb", "token")].filter(Boolean)
+  for (const file of files) {
+    if (!existsSync(file)) {
+      lines.push(`没有 ${file}`)
+      continue
+    }
+    try {
+      const parsed = parseTokenText(readFileSync(file, "utf8"))
+      if (!parsed?.token && !parsed?.refresh) lines.push(`${file} 存在但没有 access_token 字段`)
+      else if (parsed.expires && parsed.expires < Date.now() && !parsed.refresh) lines.push(`${file} 里的令牌已过期且没有 refresh_token`)
+    } catch (error) {
+      lines.push(`${file} 解析失败：${error?.message || error}`)
+    }
+  }
+  if (!process.env.CNB_TOKEN) lines.push("没有 CNB_TOKEN 环境变量")
+  return lines
+}
+
 
 function tokenFromAuth(auth) {
   return auth?.access || auth?.token || auth?.key || null
@@ -245,6 +323,33 @@ function badgesFromUser(user) {
     badges.push({ key: "tdp", label: `TDP ${tdpTag}`, kind: "tdp", tone: "success", earned: true })
   }
   return badges
+}
+
+/**
+ * /user 的 identity_providers 有时是 null（实测：一个明确拥有「天才程序员专属特权」的账号
+ * 也返回 null），但 /charge/special-amount 的 credit_desc 会写出特权来源。
+ * 徽章是用户最想看的东西，所以这条兜底不能少。
+ */
+function badgesFromSpecialClaim(specialText, existing) {
+  const text = String(specialText || "")
+  if (!text) return []
+  const has = (kind) => existing.some((b) => b.kind === kind || b.kind === "combined")
+  const extra = []
+  if (!has("genius") && /天才/.test(text)) {
+    extra.push({ key: "genius", label: GENIUS_BADGE, kind: "genius", tone: "success", earned: true, source: "特权额度说明" })
+  }
+  if (!has("edu") && /高校/.test(text)) {
+    extra.push({ key: "edu", label: "高校认证", kind: "edu", tone: "success", earned: true, source: "特权额度说明" })
+  }
+  if (!has("tdp") && /TDP/i.test(text)) {
+    extra.push({ key: "tdp", label: "TDP 会员", kind: "tdp", tone: "success", earned: true, source: "特权额度说明" })
+  }
+  return extra
+}
+
+function collectBadges(user, special) {
+  const fromUser = badgesFromUser(user)
+  return [...fromUser, ...badgesFromSpecialClaim(special?.credit_desc, fromUser)]
 }
 
 /**
@@ -426,6 +531,68 @@ async function cnbWeb(path, { session, csrfkey, method = "GET", body, signal, ti
     throw new CnbError(`CNB Web 请求失败：${error?.message || error}`)
   }
   return response
+}
+
+// ---------------------------------------------------------------------------
+// OAuth 续期：cnb-cli 用的是标准 OAuth2 refresh_token，端点实测在 cnb.cool
+// ---------------------------------------------------------------------------
+const OAUTH_TOKEN_URL = `${WEB_BASE}/oauth2/token`
+
+/**
+ * 用 refresh_token 换新 access_token。
+ * 实测：POST https://cnb.cool/oauth2/token
+ *   grant_type=refresh_token & refresh_token=… & client_id=cnb_cli
+ * → { access_token, expires_in(≈28799), refresh_token, scope, token_type: "bearer" }
+ */
+async function refreshCnbToken({ refresh, clientId = "cnb_cli", signal } = {}) {
+  if (!refresh) return null
+  let response
+  try {
+    response = await fetch(OAUTH_TOKEN_URL, {
+      method: "POST",
+      headers: baseHeaders({ "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }),
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: String(refresh),
+        client_id: String(clientId || "cnb_cli"),
+      }),
+      signal: abortSignal(signal, 20_000),
+    })
+  } catch (error) {
+    if (error?.name === "AbortError") throw error
+    return null
+  }
+  const data = await readBody(response)
+  if (!response.ok || !data?.access_token) return null
+  return {
+    access: String(data.access_token),
+    refresh: String(data.refresh_token || refresh),
+    expires: Date.now() + (Number(data.expires_in) || 28_800) * 1000,
+  }
+}
+
+/**
+ * 把刷新后的令牌写回 ~/.cnb/token，让 cnb-cli 也跟着新 —— 不然用户 CLI 那边还是过期的。
+ * 写之前备份成 token.bak-YYYYMMDD（和 cnb-cli 自己的命名一致）。失败就算了，不影响登录。
+ */
+function writeBackCliToken(fresh) {
+  const file = cliTokenFile()
+  try {
+    if (!existsSync(file)) return false
+    const json = JSON.parse(readFileSync(file, "utf8"))
+    const entry = pickAuthEntry(json)
+    if (!entry) return false
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "")
+    const backup = `${file}.bak-${stamp}`
+    if (!existsSync(backup)) copyFileSync(file, backup)
+    entry.access_token = fresh.access
+    entry.refresh_token = fresh.refresh
+    entry.expires_at = Math.floor(fresh.expires / 1000)
+    writeFileSync(file, `${JSON.stringify(json, null, 2)}\n`, "utf8")
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** 抓首页拿 csrftoken（HTML 里的 window.csrftoken="…"）与 csrfkey（Set-Cookie）。 */
@@ -631,7 +798,7 @@ function buildSideQuotas(quota, volume) {
 function buildSnapshot({ user, groups, quota, volume, special, repos, account, options, transport, extra = {} }) {
   const repo = repoPath(account, options)
   const org = orgSlug(account, options, repo)
-  const badges = badgesFromUser(user)
+  const badges = collectBadges(user, special)
   const credit = buildCreditView(quota, volume, special)
   const entrances = identityEntrances(badges)
   const realnameVerified = Boolean(user?.verified)
@@ -972,179 +1139,246 @@ function buildDirectFetch({ account, options, getAuth }) {
 // ---------------------------------------------------------------------------
 function authMethods(options) {
   return [
+    // -----------------------------------------------------------------------
+    // 方式一：一键登录。0 个问题，读本机已有的 CNB 凭证；过期了自动用 refresh_token 续期。
+    // -----------------------------------------------------------------------
     {
       type: "oauth",
-      label: "一键登录（读取本机 cnb-cli 登录态）",
-      instructions: "自动检测 CNB_TOKEN / CNB_TOKEN_FILE / ~/.cnb/token",
+      label: "一键登录（读取本机已登录的 CNB 凭证）",
       async authorize() {
         const local = readLocalCnbToken()
         return {
-          url: local?.token ? ROUTES.quota : ROUTES.profile,
+          url: ROUTES.token,
           instructions: local?.token
-            ? `已在本机找到登录态（${local.source}），正在校验…`
-            : "本机没有找到 cnb-cli 登录态。可以点开这个页面扫码登录 cnb.cool，然后回来重试；或者改用「个人访问令牌」方式。",
+            ? "已在本机找到 CNB 凭证，正在校验（过期会自动续期）…"
+            : "本机没找到 CNB 凭证。刚打开的页面里可以生成一个访问令牌，复制后回来点「粘贴访问令牌」；或者装一下 CLI 再回来点这个按钮：npm i -g @cnbcool/cnb-cli && cnb login",
           method: "auto",
           async callback() {
-            const fresh = readLocalCnbToken()
-            if (!fresh?.token) {
-              return {
-                type: "failed",
-                error: "未找到 CNB_TOKEN / ~/.cnb/token。先跑 `npm i -g @cnbcool/cnb-cli && cnb login`，或改用个人访问令牌方式。",
-              }
-            }
-            let user
-            try {
-              user = await fetchUser(fresh.token)
-            } catch (error) {
-              return { type: "failed", error: `本地令牌校验失败：${error?.message || error}` }
-            }
-            if (!user) return { type: "failed", error: "本地令牌校验失败：/user 返回空" }
-            const groups = await fetchTopGroups(fresh.token)
-            const org = options.org || groups[0]?.path || ""
-            const repo = options.repo || (org ? `${org}/${options.repoName}` : "")
-            if (options.autoCreateRepo && org && !repoExists(await listRepos(fresh.token, org), options.repoName)) {
-              await createRepo({ token: fresh.token, org, name: options.repoName, visibility: options.visibility })
-            }
-            return {
-              type: "success",
-              access: fresh.token,
-              refresh: fresh.refresh || "",
-              expires: fresh.expires || 0,
-              accountId: user.username || fresh.accountId || "cnb-user",
-              uid: String(user.id || user.username || ""),
-              org,
-              repo,
-              metadata: {
-                org,
-                repo,
-                username: user.username || "",
-                transport: options.transport === "auto" ? "cookie" : options.transport,
-                loginMethod: "local",
-              },
-            }
+            return authorizeFromLocal(options)
           },
         }
       },
     },
+
+    // -----------------------------------------------------------------------
+    // 方式二：一个输入框。PAT 和 CNBSESSION 都接受，插件自己认 —— 用户不需要选。
+    // -----------------------------------------------------------------------
     {
       type: "api",
-      label: "CNB 个人访问令牌 (PAT)",
-      placeholder: "粘贴 CNB PAT",
-      prompts: [
-        {
-          type: "text",
-          key: "org",
-          message: "顶级组织 slug（留空自动取第一个）",
-          placeholder: "my-org",
-        },
-        {
-          type: "text",
-          key: "repo",
-          message: "仓库路径（AI 通道用，形如 my-org/code）",
-          placeholder: "my-org/code",
-        },
-        {
-          type: "select",
-          key: "transport",
-          message: "AI 通道",
-          options: [
-            { label: "官方工作区中继（路线 A，支持 tools）", value: "relay" },
-            { label: "Cookie 直连 cnb.cool（路线 B，不支持 tools）", value: "cookie" },
-            { label: "直连 api.cnb.cool（仅流水线内可用）", value: "direct" },
-          ],
-        },
-      ],
+      label: "粘贴访问令牌（CNB 的 PAT，或浏览器的 CNBSESSION）",
+      placeholder: "直接粘贴，不用管是哪一种，插件会自己判断",
       async authorize(inputs) {
-        const inputsObj = inputs && typeof inputs === "object" ? inputs : {}
-        const token = String(inputsObj.key || inputsObj.token || "").trim()
-        if (!token) return { type: "failed", error: "没有拿到 PAT" }
-        let user
-        try {
-          user = await fetchUser(token)
-        } catch (error) {
-          return { type: "failed", error: `/user 校验失败：${error?.message || error}` }
-        }
-        if (!user) return { type: "failed", error: "/user 返回空，PAT 可能没有 account-profile:r 权限" }
-        const groups = await fetchTopGroups(token)
-        const org = String(inputsObj.org || options.org || groups[0]?.path || "").replace(/^\/+|\/+$/g, "")
-        const repo = String(inputsObj.repo || options.repo || (org ? `${org}/${options.repoName}` : "")).replace(/^\/+|\/+$/g, "")
-        let created = null
-        if (options.autoCreateRepo && org) {
-          const existing = await listRepos(token, org)
-          if (!repoExists(existing, options.repoName)) {
-            created = await createRepo({ token, org, name: options.repoName, visibility: options.visibility })
-          }
-        }
-        return {
-          type: "success",
-          key: token,
-          metadata: {
-            org,
-            repo,
-            username: user.username || "",
-            transport: String(inputsObj.transport || options.transport || "auto"),
-            loginMethod: "pat",
-            groups: groups.map((g) => g.path),
-            ...(created?.ok ? { createdRepo: created.path } : {}),
-            ...(created && !created.ok ? { createRepoError: created.error } : {}),
-          },
-        }
-      },
-    },
-    {
-      type: "api",
-      label: "浏览器登录态（CNBSESSION，路线 B）",
-      placeholder: "粘贴 CNBSESSION 的值",
-      prompts: [
-        {
-          type: "password",
-          key: "csrfkey",
-          message: "csrfkey（可选，从 cnb.cool 的 cookie 里复制；留空自动抓）",
-          placeholder: "csrfkey",
-        },
-        {
-          type: "text",
-          key: "repo",
-          message: "仓库路径（路线 B 的 AI 端点要用，形如 org/repo）",
-          placeholder: "my-org/code",
-        },
-      ],
-      async authorize(inputs) {
-        const inputsObj = inputs && typeof inputs === "object" ? inputs : {}
-        const session = String(inputsObj.key || inputsObj.session || "").trim()
-        if (!session) return { type: "failed", error: "没有拿到 CNBSESSION" }
-        let csrf = { csrfToken: "", csrfkey: String(inputsObj.csrfkey || "").trim(), looksLoggedIn: false, htmlLength: 0 }
-        try {
-          csrf = await grabCsrf(session)
-        } catch (error) {
-          return { type: "failed", error: `用这个 CNBSESSION 访问 cnb.cool 失败：${error?.message || error}` }
-        }
-        if (!csrf.looksLoggedIn) {
+        const raw = pickCredential(inputs)
+        if (!raw) {
           return {
             type: "failed",
-            error: `cnb.cool 首页只有 ${csrf.htmlLength} 字节，登录态没生效（匿名约 145KB，登录态约 350KB）。CNBSESSION 可能已过期。`,
+            error: "没有读到输入内容。粘贴 CNB 的访问令牌（在 " + ROUTES.token + " 生成），或者浏览器里 CNBSESSION 的值。",
           }
         }
-        const repo = String(inputsObj.repo || options.repo || "").replace(/^\/+|\/+$/g, "")
-        const org = repo.includes("/") ? repo.split("/")[0] : options.org
+        const who = await identifyCredential(raw)
+        if (who.kind === "pat") return successFromPat({ options, token: raw, user: who.user })
+        if (who.kind === "session") return successFromSession({ options, session: raw, csrf: who.csrf })
         return {
-          type: "success",
-          key: session,
-          metadata: {
-            kind: "cookie",
-            session,
-            csrfkey: csrf.csrfkey || inputsObj.csrfkey || "",
-            csrfToken: csrf.csrfToken,
-            org,
-            repo,
-            transport: "cookie",
-            loginMethod: "cookie",
-            htmlLength: csrf.htmlLength,
-          },
+          type: "failed",
+          error:
+            "这个值既不是可用的访问令牌，也不是有效的 CNBSESSION。" +
+            "如果是访问令牌，确认它在 " + ROUTES.token + " 生成、复制完整、没过期；" +
+            "如果是 CNBSESSION，确认 cnb.cool 还处于登录状态（首页拿到 " + (who.htmlLength || 0) + " 字节，登录态应在 200KB 以上）。",
         }
       },
     },
   ]
+}
+
+/** 从 magpie 传来的 inputs 里把用户输入捞出来。不同版本放的 key 不一样，别赌一个。 */
+function pickCredential(inputs) {
+  if (typeof inputs === "string") return inputs.trim()
+  if (!inputs || typeof inputs !== "object") return ""
+  for (const key of ["key", "token", "value", "secret", "apiKey", "api_key", "credential"]) {
+    const v = inputs[key]
+    if (typeof v === "string" && v.trim()) return v.trim()
+  }
+  for (const v of Object.values(inputs)) {
+    if (typeof v === "string" && v.trim().length > 20) return v.trim()
+  }
+  return ""
+}
+
+/**
+ * 一个输入框要同时认两种凭证，所以不靠"长得像"猜，直接都试一遍：
+ *   1. 当访问令牌打 /user → 200 就是 PAT
+ *   2. 当 CNBSESSION 抓首页 → 有登录态就成立
+ * 这样用户粘哪个都能进，不用先想清楚自己手里是什么。
+ */
+async function identifyCredential(raw) {
+  const value = String(raw || "").trim()
+  let patError = ""
+  try {
+    const user = await fetchUser(value)
+    if (user) return { kind: "pat", user }
+    patError = "/user 返回空"
+  } catch (error) {
+    patError = error?.message || String(error)
+  }
+
+  let htmlLength = 0
+  try {
+    const csrf = await grabCsrf(value)
+    htmlLength = csrf.htmlLength
+    if (csrf.looksLoggedIn) return { kind: "session", csrf }
+  } catch {
+    htmlLength = 0
+  }
+
+  return { kind: "invalid", patError, htmlLength }
+}
+
+function scopeFor(options, groups) {
+  const org = String(options.org || groups[0]?.path || "").replace(/^\/+|\/+$/g, "")
+  const repo = String(options.repo || (org ? org + "/" + options.repoName : "")).replace(/^\/+|\/+$/g, "")
+  return { org, repo }
+}
+
+async function successFromPat({ options, token, user }) {
+  const groups = await fetchTopGroups(token)
+  const { org, repo } = scopeFor(options, groups)
+  let created = null
+  if (options.autoCreateRepo && org) {
+    const existing = await listRepos(token, org)
+    if (!repoExists(existing, options.repoName)) {
+      created = await createRepo({ token, org, name: options.repoName, visibility: options.visibility })
+    }
+  }
+  return {
+    type: "success",
+    key: token,
+    metadata: {
+      org,
+      repo,
+      username: user.username || "",
+      transport: options.transport,
+      loginMethod: "pat",
+      groups: groups.map((g) => g.path),
+      ...(created?.ok ? { createdRepo: created.path } : {}),
+      ...(created && !created.ok ? { createRepoError: created.error } : {}),
+    },
+  }
+}
+
+function successFromSession({ options, session, csrf }) {
+  const repo = String(options.repo || "").replace(/^\/+|\/+$/g, "")
+  const org = repo.includes("/") ? repo.split("/")[0] : options.org
+  return {
+    type: "success",
+    key: session,
+    metadata: {
+      kind: "cookie",
+      session,
+      csrfkey: csrf.csrfkey || "",
+      csrfToken: csrf.csrfToken || "",
+      org,
+      repo,
+      transport: "cookie",
+      loginMethod: "session",
+      htmlLength: csrf.htmlLength,
+    },
+  }
+}
+
+/**
+ * 一键登录的全部逻辑：读本机凭证 → 校验 → 过期就 refresh → 再校验 → 顺手探测组织和仓库。
+ * 每一步失败都给出"接下来该做什么"，而不是一句"登录失败"。
+ */
+async function authorizeFromLocal(options) {
+  const local = readLocalCnbToken()
+  if (!local || (!local.token && !local.refresh)) {
+    const probe = describeLocalTokenProbe()
+    return {
+      type: "failed",
+      error:
+        "本机没有可用的 CNB 凭证（" +
+        probe.slice(0, 2).join("；") +
+        "）。两条路选一条：① 在 " +
+        ROUTES.token +
+        " 生成访问令牌，回来点「粘贴访问令牌」；② 跑 npm i -g @cnbcool/cnb-cli && cnb login，再点一次「一键登录」。",
+    }
+  }
+
+  let token = local.token || ""
+  let refresh = local.refresh || ""
+  let expires = local.expires || 0
+  let user = null
+  let refreshed = false
+
+  // 1. 直接校验
+  if (token) {
+    try {
+      user = await fetchUser(token)
+    } catch {
+      user = null
+    }
+  }
+
+  // 2. 过期或被拒 → 用 refresh_token 续期（实测 cnb.cool/oauth2/token 可用）
+  if (!user && refresh) {
+    const fresh = await refreshCnbToken({ refresh, clientId: local.clientId })
+    if (fresh) {
+      token = fresh.access
+      refresh = fresh.refresh
+      expires = fresh.expires
+      refreshed = true
+      writeBackCliToken(fresh)
+      try {
+        user = await fetchUser(token)
+      } catch {
+        user = null
+      }
+    }
+  }
+
+  if (!user) {
+    return {
+      type: "failed",
+      error:
+        "本机凭证已失效，" +
+        (refresh ? "自动续期也失败了" : "而且没有 refresh_token 可以续期") +
+        "。跑一次 cnb login 重新扫码，或在 " +
+        ROUTES.token +
+        " 生成访问令牌后点「粘贴访问令牌」。",
+    }
+  }
+
+  const groups = await fetchTopGroups(token)
+  const { org, repo } = scopeFor(options, groups)
+
+  if (options.autoCreateRepo && org) {
+    const existing = await listRepos(token, org)
+    if (!repoExists(existing, options.repoName)) {
+      await createRepo({ token, org, name: options.repoName, visibility: options.visibility })
+    }
+  }
+
+  return {
+    type: "success",
+    access: token,
+    refresh,
+    expires,
+    accountId: user.username || local.accountId || "cnb-user",
+    uid: String(user.id || user.username || ""),
+    org,
+    repo,
+    metadata: {
+      org,
+      repo,
+      username: user.username || "",
+      transport: options.transport,
+      loginMethod: "local",
+      source: local.source,
+      clientId: local.clientId || "cnb_cli",
+      refreshed,
+      groups: groups.map((g) => g.path),
+    },
+  }
 }
 
 function repoExists(repos, name) {
@@ -1175,6 +1409,19 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
       provider: PROVIDER_ID,
       maxConcurrency: 4,
       methods: authMethods(options),
+
+      // magpie 会在 access_token 到期前替你续期，同一时间只续一次。
+      // CNB 的令牌 8 小时（expires_in≈28800），提前半小时续。
+      refreshLead: 30 * 60 * 1000,
+      async refresh(auth) {
+        const next = await refreshCnbToken({
+          refresh: auth?.refresh,
+          clientId: auth?.metadata?.clientId || "cnb_cli",
+        })
+        if (!next) return undefined // 没什么可续的就什么都不返回，账号保持原样
+        writeBackCliToken(next)
+        return { access: next.access, refresh: next.refresh, expires: next.expires }
+      },
 
       loader: async (getAuth) => {
         const auth = await getAuth()
@@ -1208,7 +1455,15 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
         const auth = await getAuth()
         const account = resolveAccount(auth)
         if (!account.token) {
-          return { error: "未登录 CNB：用「一键登录」或粘贴 PAT", signIn: "expired", windows: [] }
+          // 只粘了 CNBSESSION 的账号拿不到额度（api.cnb.cool 要 Bearer 令牌），
+          // 这不算登录失效，别把账号标红。
+          if (account.session) {
+            return {
+              error: "额度需要访问令牌：在 https://cnb.cool/profile/token 生成 PAT，然后点「粘贴访问令牌」补上（CNBSESSION 只够跑 AI 通道）。",
+              windows: [],
+            }
+          }
+          return { error: "未登录 CNB：点「一键登录」，或粘贴访问令牌", signIn: "expired", windows: [] }
         }
         let snapshot
         try {
@@ -1517,23 +1772,35 @@ export const _internal = Object.freeze({
   PROVIDER_ID,
   MODEL_SPECS,
   ROUTES,
+  OAUTH_TOKEN_URL,
   CnbError,
+  authorizeFromLocal,
   badgesFromUser,
   buildCreditView,
   buildSnapshot,
+  cliTokenFile,
   configModels,
   createRepo,
+  describeLocalTokenProbe,
   foldSse,
   grabCsrf,
+  identifyCredential,
   identityEntrances,
+  badgesFromSpecialClaim,
+  collectBadges,
   normaliseOptions,
+  normalizeExpiry,
   parseTokenText,
+  pickAuthEntry,
+  pickCredential,
   pickTransport,
   publishState,
   readLocalCnbToken,
+  refreshCnbToken,
   repoPath,
   resolveAccount,
   STATE_FILE,
+  writeBackCliToken,
 })
 
 export default CnbAccountPlugin
