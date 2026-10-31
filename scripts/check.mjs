@@ -177,7 +177,7 @@ for (const file of ["index.html", "panel.html"]) {
   const html = readFileSync(join(pageDir, file), "utf8")
   ok(`${file} 无内联 <script>`, !/<script(?![^>]*\bsrc=)[^>]*>/i.test(html), "出现了没有 src 的 script")
   ok(`${file} 引了 bridge.js`, html.includes("_magpie/bridge.js"))
-  ok(`${file} 引了 state.js`, html.includes('src="state.js"'))
+  ok(`${file} 引了 state.default.js`, html.includes('src="state.default.js"'))
   ok(`${file} 没有内联 fetch`, !/\bfetch\s*\(/.test(html))
   ok(`${file} 没有 window.open`, !/window\.open\s*\(/.test(html))
 }
@@ -186,13 +186,32 @@ ok("app.js 不直接 fetch（沙箱 connect-src 'none'）", !/\bfetch\s*\(/.test
 ok("app.js 不建 WebSocket", !/new\s+WebSocket/.test(appjs))
 ok("app.js 用 location.assign 做跳转", /location\.assign/.test(appjs))
 ok("app.js 只用声明的 read 权限", !/magpie\.read\(\s*["'](?!usage:summary|providers:list)/.test(appjs))
-ok("state.js 定义了 window.__CNB_STATE__", readFileSync(join(pageDir, "state.js"), "utf8").includes("window.__CNB_STATE__"))
+ok("state.default.js 定义了 window.__CNB_STATE__", readFileSync(join(pageDir, "state.default.js"), "utf8").includes("window.__CNB_STATE__"))
 
-const stateSrc = readFileSync(join(pageDir, "state.js"), "utf8")
-ok("state.js 可被 JSON 解析", (() => {
-  const json = stateSrc.slice(stateSrc.indexOf("= ") + 2).trim().replace(/;\s*$/, "")
-  try { JSON.parse(json); return true } catch { return false }
-})())
+const stateSrc = readFileSync(join(pageDir, "state.default.js"), "utf8")
+const evalState = () => {
+  try {
+    const sandbox = {}
+    new Function("window", stateSrc)(sandbox)
+    return sandbox.__CNB_STATE__ || null
+  } catch {
+    return null
+  }
+}
+ok("state.default.js 能求值出 window.__CNB_STATE__ 对象", Boolean(evalState()))
+const defState = evalState() || {}
+ok(
+  "默认快照字段齐全（account / credit / entrances / routes / sideQuotas）",
+  Boolean(defState.account && defState.credit && defState.routes && Array.isArray(defState.entrances) && Array.isArray(defState.sideQuotas)),
+)
+ok(
+  "默认快照的认证入口覆盖高校 / 天才 / TDP",
+  ["edu", "genius", "tdp"].every((id) => (defState.entrances || []).some((e) => e.id === id)),
+)
+ok(
+  "默认快照每条入口都有 url 与 reward",
+  (defState.entrances || []).every((e) => /^https:\/\/cnb\.cool\//.test(e.url) && typeof e.reward === "string" && e.reward.length > 0),
+)
 
 // app.js 里 $("xxx") 引用的 id，页面里必须真的存在（可选元素除外）
 const OPTIONAL_IDS = new Set(["mw"]) // 只有独立页面才有 magpie 侧统计
@@ -226,7 +245,7 @@ for (const f of [
   "page/panel.html",
   "page/app.js",
   "page/style.css",
-  "page/state.js",
+  "page/state.default.js",
   "page/icon.svg",
   "scripts/check.mjs",
   "scripts/push.mjs",

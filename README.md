@@ -39,7 +39,7 @@ m quota
 自检：
 
 ```bash
-node scripts/check.mjs     # 143 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
+node scripts/check.mjs     # 146 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
 ```
 
 ---
@@ -130,6 +130,8 @@ magpie 的插件页面跑在 `sandbox="allow-scripts"` + `connect-src 'none'` �
 1. **宿主侧**（Bun，有完整网络权限）在 `auth.usage` / `provider.models` / 工具调用时采集一份快照，
 2. 写成 `page/state.js`（`window.__CNB_STATE__`），
 3. 页面只读这份快照；点「刷新快照」用 `state.js?_=时间戳` 重新加载。
+
+入库的是 `page/state.default.js`（默认兜底，页面先渲染它，再动态拉 `state.js` 覆盖）；`page/state.js` 是运行时产物，写进 `.gitignore`，否则每次读额度都会让仓库变 dirty。
 
 也就是说：**页面显示的是宿主写出来的快照，点一次 magpie 里的额度就能刷新**。这是沙箱约束下的唯一正解，不是偷懒。
 
@@ -283,10 +285,11 @@ opencode-cnb-account/
 │   ├── panel.html        供应商面板（slot: provider）
 │   ├── app.js            渲染 + 复制 + 跳转（不联网）
 │   ├── style.css         --magpie-* 变量 + 自己的规则
-│   ├── state.js          宿主写出的快照（window.__CNB_STATE__）
+│   ├── state.default.js  默认快照（入库兜底）
+│   │                   state.js 是宿主写出的运行时快照，已在 .gitignore 里
 │   └── icon.svg          插件图标
 ├── scripts/
-│   ├── check.mjs         143 项自检
+│   ├── check.mjs         146 项自检
 │   └── push.mjs          一条命令推到 GitHub
 ├── PUSH-TO-GITHUB.md     推送的三种方式（HTTPS token / SSH / gh CLI）
 ├── .gitignore .gitattributes   统一 LF（Windows 上编辑不会污染模板字符串）

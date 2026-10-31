@@ -31,3 +31,7 @@ npm-debug.log*
 # 本地覆盖的选项 / 快照（含账号信息，绝不入库）
 options.local.json
 state.local.js
+
+# 运行时快照：插件宿主每次读额度都会重写它，入库只会让仓库永远显示 dirty。
+# 默认占位数据在 page/state.default.js（那个是入库的）。
+page/state.js

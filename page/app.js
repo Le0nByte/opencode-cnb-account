@@ -362,18 +362,22 @@
 
   // --- 启动 ---------------------------------------------------------------
   function boot() {
+    // 先用已经加载的 state.default.js（或上次写出的快照）立刻渲染，不等 state.js。
+    renderAll(window.__CNB_STATE__ || {})
+    bindActions(window.__CNB_STATE__ || {})
+    renderMagpie()
+
     var bridge = window.magpie
     var start = bridge && bridge.ready ? bridge.ready : Promise.resolve(null)
     start
       .then(function (theme) {
         applyTheme(theme)
         if (bridge && bridge.onTheme) bridge.onTheme(applyTheme)
+        // 再尝试拉运行时快照 state.js（不存在就保持默认，onerror 静默）
         return reloadState()
       })
       .then(function (st) {
-        renderAll(st || window.__CNB_STATE__ || {})
-        bindActions(window.__CNB_STATE__ || {})
-        renderMagpie()
+        if (st) renderAll(st)
       })
       .catch(function (error) {
         var sub = $("sub")

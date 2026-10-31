@@ -7,8 +7,8 @@
   <link rel="stylesheet" href="style.css">
   <!-- bridge 由 magpie 在每个页面旁边提供：主题、options、read、onAction -->
   <script src="_magpie/bridge.js"></script>
-  <!-- 宿主写出的快照。页面没有网络权限，这份文件是唯一的数据来源。 -->
-  <script src="state.js"></script>
+  <!-- 入库的默认快照；运行时快照 state.js 由 app.js 动态加载（不存在也不影响） -->
+  <script src="state.default.js"></script>
   <script src="app.js" defer></script>
 </head>
 <body class="cnb">
