@@ -39,29 +39,43 @@ m quota
 自检：
 
 ```bash
-node scripts/check.mjs     # 173 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
+node scripts/check.mjs     # 184 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
 ```
 
 ---
 
-## 2. 登录：两个方式，都只要一步
+## 2. 登录：三个方式，按需选
 
-| 方式 | 你需要做的 | 说明 |
+| 方式 | 你需要做的 | 适合 |
 |---|---|---|
-| **一键登录**（oauth） | 什么都不用填 | 读本机已有的 CNB 凭证：`CNB_TOKEN` 环境变量 / `~/.cnb/token` / `~/.config/cnb/token`。**令牌过期会自动用 `refresh_token` 续期，并把新令牌写回 `~/.cnb/token`**（写前备份成 `token.bak-YYYYMMDD`） |
-| **粘贴访问令牌**（api） | 粘一个值 | **PAT 和 CNBSESSION 都能粘，插件自己判断是哪种** —— 你不用先想清楚手里是什么 |
+| **浏览器授权登录**（oauth + device flow） | 点一下 → 浏览器里确认一次 | **默认走这个**。登录任意账号，**可以加多个账号**，不碰本机任何文件 |
+| **用本机 cnb-cli 的凭证**（oauth） | 什么都不填 | 只想要 `~/.cnb/token` 里那**一个**账号，且装过 `cnb-cli`。令牌过期自动续期 |
+| **粘贴访问令牌**（api） | 粘一个值 | 手头已经有 PAT，或想用 CNBSESSION 跑 AI 通道 |
 
-**没有「下一步」按钮。** 第一版给了三个问题（组织 / 仓库 / 通道）逐个下一步，纯属自找麻烦；现在这三项全自动：
+**没有任何「下一步」。** 组织 / 仓库 / 通道全部自动探测：`/user/groups` 取第一个组织，`repo = <组织>/<repoName>`（默认 `code`），通道按 `relay.url` → CNBSESSION → direct 判定。
 
-- **组织** —— `/user/groups` 取第一个
-- **仓库** —— `<组织>/<repoName>`，`repoName` 默认 `code`，可在选项里改
-- **通道** —— 你配了 `relay.url` 就走 relay，有 CNBSESSION 就走 cookie，否则 direct
+### 浏览器授权登录：怎么加第二个账号
 
-### 为什么「粘贴访问令牌」不在登录那一刻校验
+走的是 CNB 自己的 **OAuth Device Flow**（`cnb-cli` 的 `cnb login` 用的同一套，参数从 `@cnbcool/cnb-cli` 的 `dist/index.js` 里读出来的）：
+
+```
+POST https://cnb.cool/oauth2/device/auth     client_id=cnb_cli
+  → { device_code, user_code, verification_uri_complete, expires_in: 600, interval: 5 }
+
+POST https://cnb.cool/oauth2/token
+  grant_type=urn:ietf:params:oauth:grant-type:device_code & device_code & client_id
+  → 200 token  或  400 { error: authorization_pending | slow_down | access_denied | expired_token }
+```
+
+点这个按钮后，magpie 会打开 `https://cnb.cool/oauth2/device/verify?user_code=XXXXXXXX`，你在浏览器里确认一次，插件轮询到令牌、读一次 `/user` 确认是哪个账号、探测组织仓库，完成。
+
+**关键：它完全不读也不写 `~/.cnb/token`。** 所以想要几个账号就登几次，互不干扰。
+
+### 粘贴访问令牌：识别发生在运行时
 
 因为 magpie 的 `api` 登录方式有个硬约束：**插件在 `authorize` 里拿不到用户在 key 输入框里填的值**。
 
-看 magpie 自己的宿主实现（`internal/plugin/host.js`，编译进二进制，可以 `strings` 出来）：
+看 magpie 自己的宿主实现（`internal/plugin/host.js`，编译进二进制，`strings` 能捞出来）：
 
 ```js
 async function apiKey({ provider, method, inputs, key, account, proxy }) {
@@ -75,71 +89,48 @@ async function apiKey({ provider, method, inputs, key, account, proxy }) {
 }
 ```
 
-`key` 和 `inputs` 是两个独立参数：`inputs` 只有 `prompts` 的答案。所以：
+`key` 和 `inputs` 是两个独立参数，`inputs` 只有 `prompts` 的答案。所以给 `api` 方式加 `authorize` 只会读到 `undefined`，而靠 `prompts` 收集又要多点一次「下一步」。
 
-- 给 `api` 方式加 `authorize` → 读到的输入永远是 `undefined` → 误报「没有读到输入内容」（v0.2.1 就是这个错）
-- 靠 `prompts` 收集 → 用户又要多点一次「下一步」
-
-所以 v0.2.2 起 `api` 方式**不带 `authorize`、不带 `prompts`**，magpie 直接把输入框的值原样存成 `{ type: "api", key }`；「这是 PAT 还是 CNBSESSION」交给运行时的 `ensureCredential()` 判断一次并缓存：
+所以 `api` 方式**不带 `authorize`、不带 `prompts`**，magpie 直接把输入框的值原样存成 `{ type: "api", key }`；「这是 PAT 还是 CNBSESSION」交给运行时的 `ensureCredential()` 判断一次并缓存：
 
 1. 先当访问令牌打 `/user` → 200 就是 PAT，顺便拿到 `username` 和组织列表
 2. 不行再当 CNBSESSION 抓首页 → 登录态首页 200KB+，成立就用它跑 AI 通道
-3. 两种都不是 → 账号卡片上直接显示「粘贴的凭证无效」，而不是假装成功
+3. 两种都不是 → 账号卡片上直接说清**你粘的是什么**：
 
-代价是校验发生在第一次读额度时（点开账号卡片 / `magpie quota`），不在点「保存」的瞬间。这是 magpie 登录协议的限制，不是插件偷懒。
+> 粘贴的凭证无效：你给的是 27 个字符、没有点号分段。CNB 访问令牌是 94 字符左右、以 `cnb_at_` 开头；CNBSESSION 是三段（数字.数字.<长 hex>）。到 https://cnb.cool/profile/token 生成一个再粘；或者直接用「浏览器授权登录」，连粘都不用。
 
+代价是校验发生在第一次读额度时（点开账号卡片 / `magpie quota`），不在点「保存」的瞬间 —— 这是 magpie 登录协议的限制。
 
-### 访问令牌从哪来
+### 用本机 cnb-cli 的凭证：只能登录那一个账号
 
-打开 <https://cnb.cool/profile/token> 生成一个，复制，粘进 magpie 那个唯一的输入框。就这些。
+`~/.cnb/token` 是 cnb-cli 写的，**只有终端的 `cnb login` 会更新它，在浏览器里换账号不会**。所以这个方式只能登录它里面那一个账号；读到的是已有账号时插件会明确拦下：
 
-只想要 AI 通道、不关心徽章和额度的话，浏览器里 `CNBSESSION` 的值也可以粘在同一个框里 —— 插件会认出它是登录态，走 cookie 通道。
+> 读出来的仍然是「xiaopangdev」，和你已经登录的账号是同一个，magpie 会按 accountId 把它覆盖掉，加不进第二个。本机 …/token 最后修改于 2026-10-31 15:11:46（在浏览器里换账号不会更新这个文件，它只由终端的 cnb login 写。）要加新账号：点上面的「浏览器授权登录」—— 浏览器里确认一次就行，不碰本机文件，加几个账号都可以。
 
-### 一键登录为什么会读到「过期」
-
-CNB 的访问令牌只有 8 小时（`expires_in ≈ 28800`），`cnb-cli` 把它连同 `refresh_token` 一起写在 `~/.cnb/token`。插件读到过期的 `access_token` 时会：
-
-1. 拿 `refresh_token` 去 `POST https://cnb.cool/oauth2/token`（`grant_type=refresh_token`，`client_id=cnb_cli`）换新的
-2. 用新令牌调 `/user` 验证
-3. 把新令牌写回 `~/.cnb/token`，`cnb-cli` 那边也跟着好
-
-所以「网页上登录了但插件读不到」通常是两种情况，现在都有明确反馈：
-
-- **`~/.cnb/token` 不存在** —— 说明没跑过 `cnb login`（网页登录 ≠ CLI 登录），失败信息会列出所有找过的路径
-- **文件存在但令牌过期** —— 自动续期（这是第一版真正的 bug：cnb-cli 的令牌嵌在 `auths["cnb.cool"]` 下面，旧解析器只看顶层字段，读出来是空串）
-
-登录成功后，账号卡片的 `plan` 显示认证徽章串（如 `天才程序员 · 高校老师`），`user` 显示 CNB 用户名，`balance` 显示总额度。
-
-> 徽章来源：`/user` 的 `identity_providers`；它为空时退回 `/charge/special-amount` 的 `credit_desc`（实测有个「天才程序员专属特权」的账号 `identity_providers` 就是 `null`，只能靠这条兜底）。
-
----
-
-### 想加第二个账号？
-
-「一键登录」**只能登录 `~/.cnb/token` 里那一个账号**。这个文件只由终端的 `cnb login` 写 —— **在浏览器里换账号不会更新它**。
-
-所以如果你在网页上换了账号、然后回 magpie 点「一键登录」想加第二个，插件会明确拦下来，而不是假装成功（magpie 按 `accountId` 去重，同一个 `accountId` 只会**替换**旧账号）：
-
-> 读出来的仍然是「xiaopangdev」，和你已经登录的账号是同一个，magpie 会按 accountId 把它覆盖掉，加不进第二个。本机 …/token 最后修改于 2026-10-31 14:39:43 —— 在浏览器里换账号不会更新这个文件，它只由终端的 cnb login 写。要加新账号：① 终端跑 cnb login 换账号后再点「一键登录」；② 直接点「粘贴访问令牌」—— 你浏览器里现在登录的就是新账号，打开 https://cnb.cool/profile/token 生成一个粘进去即可。
-
-两条正路：
-
-1. **终端 `cnb login` 换成新账号** → 再点「一键登录」。新账号成为 `~/.cnb/token` 的当前账号；旧账号的令牌已经存进 magpie 的 `plugin-auth.json`，照常自动续期，不受影响。
-2. **粘令牌**：用新账号在浏览器打开 <https://cnb.cool/profile/token> 生成一个 PAT → magpie 里点「粘贴访问令牌」。
-
-> 还有一个已经堵掉的坑：插件不会把 A 账号续期后的令牌写进 B 账号的文件。写回 `~/.cnb/token` 前会校验里面的令牌确实属于当前账号（`refresh_token` 或 `access_token` 对得上），对不上就不写 —— 否则 A 续期一次，B 的「一键登录」就会读到 A，正是「加了新账号却登录成旧账号」的成因。
-
-### 令牌文件被读写的时间线
-
-`~/.cnb/token` 的修改时间是个有用的线索：
+这个文件的时间线：
 
 | 你做了什么 | 文件会变吗 |
 |---|---|
-| 网页上登录 / 换账号 | ❌ 不变 |
+| 浏览器登录 / 换账号 | ❌ 不变 |
 | 终端 `cnb login` | ✅ 变（mtime 更新） |
 | 插件自动续期（同源校验通过） | ✅ 变（写前备份 `token.bak-YYYYMMDD`） |
 | 插件自动续期（文件已被别的账号占用） | ❌ 不变（拒绝写，避免串号） |
 
+### 令牌过期会自动续期
+
+CNB 访问令牌只有 8 小时（`expires_in ≈ 28800`）。插件提供 `auth.refresh` + `refreshLead=30min`，magpie 会在到期前替你续：
+
+```
+POST https://cnb.cool/oauth2/token
+grant_type=refresh_token & refresh_token=… & client_id=cnb_cli
+→ { access_token, expires_in: 28799, refresh_token, scope, token_type: "bearer" }
+```
+
+「用本机 cnb-cli 的凭证」登录的账号续期后会写回 `~/.cnb/token`（写前备份），`cnb-cli` 那边也跟着好；其他账号只在 magpie 里续期，不碰你的文件。
+
+登录成功后，账号卡片的 `plan` 显示认证徽章串（如 `天才程序员 · 高校老师`），`user` 显示 CNB 用户名，`balance` 显示总额度。
+
+> 徽章来源：`/user` 的 `identity_providers`；它为空时退回 `/charge/special-amount` 的 `credit_desc`（实测有个「天才程序员专属特权」的账号 `identity_providers` 就是 `null`，只能靠这条兜底）。
 
 ---
 
@@ -355,7 +346,7 @@ magpie 的插件页面跑在 `sandbox="allow-scripts"` + `connect-src 'none'` �
 4. **`CNBSESSION` 会过期**，没有自动续期。失效时插件会判 `signIn: "expired"` 并让 magpie 把账号标记成需要重新登录。
 5. **`online` 状态不会自己刷新**：`signIn` 只在 401/403 且报错提到 token/login/session 时才标 `expired`，报「模型不可用」的 401 按 `kept` 处理，避免一次故障把账号全标红。
 6. **`special-amount` 需要根组织 master 权限**，无权限时该字段为空，界面显示「—」而不是 0。
-7. **「一键登录」只能登录 `~/.cnb/token` 里那一个账号** —— 它只由终端的 `cnb login` 写，网页换账号不会更新。多账号请用「粘贴访问令牌」，详见第 2 节。
+8. **「用本机 cnb-cli 的凭证」只能登录 `~/.cnb/token` 里那一个账号**（浏览器换账号不会更新它）；加账号请用「浏览器授权登录」，走 OAuth Device Flow，不碰本机文件。
 
 ---
 
@@ -374,7 +365,7 @@ opencode-cnb-account/
 │   │                   state.js 是宿主写出的运行时快照，已在 .gitignore 里
 │   └── icon.svg          插件图标
 ├── scripts/
-│   ├── check.mjs         173 项自检
+│   ├── check.mjs         184 项自检
 │   └── push.mjs          一条命令推到 GitHub
 ├── PUSH-TO-GITHUB.md     推送的三种方式（HTTPS token / SSH / gh CLI）
 ├── .gitignore .gitattributes   统一 LF（Windows 上编辑不会污染模板字符串）

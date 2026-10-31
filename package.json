@@ -1,6 +1,6 @@
 {
   "name": "opencode-cnb-account",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Magpie / OpenCode provider plugin for CNB (cnb.cool): account login, identity badges, credit quota, repo bootstrap and AI relay",
   "type": "module",
   "main": "./index.mjs",

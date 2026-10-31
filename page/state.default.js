@@ -9,7 +9,7 @@
  */
 window.__CNB_STATE__ = {
   generatedAt: "",
-  plugin: { name: "opencode-cnb-account", version: "0.2.2", provider: "cnb" },
+  plugin: { name: "opencode-cnb-account", version: "0.3.0", provider: "cnb" },
   transport: "auto",
   account: {
     username: "",

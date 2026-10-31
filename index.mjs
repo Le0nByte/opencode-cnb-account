@@ -22,7 +22,7 @@ const NPM = "@ai-sdk/openai-compatible"
 const WEB_BASE = "https://cnb.cool"
 const API_BASE = "https://api.cnb.cool"
 const DEFAULT_MODEL = "deepseek-v4.1-flash"
-const PLUGIN_VERSION = "0.2.2"
+const PLUGIN_VERSION = "0.3.0"
 const USER_AGENT = `opencode-cnb-account/${PLUGIN_VERSION}`
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -290,7 +290,7 @@ async function ensureCredential(auth, { signal } = {}) {
   if (cached) return cached
 
   const who = await identifyCredential(raw, { signal })
-  const record = { kind: who.kind, raw, checkedAt: Date.now() }
+  const record = { kind: who.kind, raw, checkedAt: Date.now(), ...(who.shape ? { shape: who.shape } : {}) }
 
   if (who.kind === "pat") {
     record.token = raw
@@ -356,6 +356,7 @@ function resolveAccount(auth) {
     org: String(auth?.org || metadata.org || cached?.org || "").trim().replace(/^\/+|\/+$/g, ""),
     repo: String(auth?.repo || metadata.repo || cached?.repo || "").trim().replace(/^\/+|\/+$/g, ""),
     username: String(auth?.accountId || metadata.username || cached?.username || "").trim(),
+    ...(cached?.shape ? { shape: cached.shape } : {}),
   }
 }
 function pickTransport(account, options) {
@@ -1288,21 +1289,214 @@ function buildDirectFetch({ account, options, getAuth }) {
 // ---------------------------------------------------------------------------
 // 登录
 // ---------------------------------------------------------------------------
+/** 可被 signal 中断的 sleep。 */
+function wait(ms, signal) {
+  if (!(ms > 0)) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (signal?.removeEventListener) signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new CnbError("已取消授权"))
+    }
+    if (signal) {
+      if (signal.aborted) return onAbort()
+      signal.addEventListener("abort", onAbort, { once: true })
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// OAuth Device Flow（RFC 8628）—— 用来登录「另一个账号」
+//
+// cnb-cli 的 `cnb login` 走的就是这套（参数从 @cnbcool/cnb-cli 1.18.33 的
+// dist/index.js 里读出来的，端点已实测可用）：
+//   POST https://cnb.cool/oauth2/device/auth   client_id=cnb_cli
+//     → { device_code, user_code, verification_uri, verification_uri_complete,
+//         expires_in(599), interval(5) }
+//   POST https://cnb.cool/oauth2/token
+//     grant_type=urn:ietf:params:oauth:grant-type:device_code & device_code & client_id
+//     → 200 token / 400 { error: authorization_pending | slow_down | access_denied | expired_token }
+//
+// 它完全不碰 ~/.cnb/token，所以可以反复登录不同账号 —— 这才是「添加账号」的正确姿势。
+// ---------------------------------------------------------------------------
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+async function postForm(url, form, { signal, timeoutMs = 20_000 } = {}) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: baseHeaders({ "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }),
+    body: new URLSearchParams(form),
+    signal: abortSignal(signal, timeoutMs),
+  })
+  const text = await res.text()
+  let json = null
+  try {
+    json = text ? JSON.parse(text) : null
+  } catch {
+    /* 留着文本给调用方 */
+  }
+  return { status: res.status, json, text: text.slice(0, 300) }
+}
+
+async function requestDeviceCode({ platform = WEB_BASE, clientId = "cnb_cli", signal } = {}) {
+  const base = String(platform || WEB_BASE).replace(/\/+$/, "")
+  const res = await postForm(`${base}/oauth2/device/auth`, { client_id: clientId }, { signal })
+  if (res.status !== 200 || !res.json?.device_code) {
+    throw new CnbError(`申请设备授权失败（HTTP ${res.status}）：${res.json?.error_description || res.json?.error || res.text}`)
+  }
+  const dev = res.json
+  return {
+    platform: base,
+    clientId,
+    deviceCode: String(dev.device_code),
+    userCode: String(dev.user_code || ""),
+    verificationUri: String(dev.verification_uri || `${base}/oauth2/device/verify`),
+    verificationUriComplete: String(
+      dev.verification_uri_complete || `${base}/oauth2/device/verify?user_code=${dev.user_code}`,
+    ),
+    expiresIn: Number(dev.expires_in) || 600,
+    interval: Number(dev.interval) > 0 ? Number(dev.interval) : 5,
+  }
+}
+
+const DEVICE_ERRORS = {
+  authorization_pending: "pending",
+  slow_down: "slow",
+  access_denied: "denied",
+  expired_token: "expired",
+}
+
+/**
+ * 轮询到用户完成授权为止。总超时取 min(maxWaitMs, expires_in)，和 cnb-cli 一致（180s）。
+ * 成功返回 token JSON；被拒 / 过期 / 超时抛 CnbError。
+ */
+async function pollDeviceToken(dev, { signal, maxWaitMs } = {}) {
+  const deadline = Date.now() + Math.min(maxWaitMs || 180_000, dev.expiresIn * 1000)
+  let interval = dev.interval * 1000
+
+  while (Date.now() < deadline) {
+    await wait(Math.min(interval, Math.max(0, deadline - Date.now())), signal)
+
+    const res = await postForm(
+      `${dev.platform}/oauth2/token`,
+      { grant_type: DEVICE_GRANT, device_code: dev.deviceCode, client_id: dev.clientId },
+      { signal },
+    )
+    if (res.status === 200 && res.json?.access_token) return res.json
+
+    const code = DEVICE_ERRORS[res.json?.error]
+    if (code === "pending") continue
+    if (code === "slow") {
+      interval += 5000
+      continue
+    }
+    if (code === "denied") throw new CnbError("授权被拒绝", { signIn: "expired" })
+    if (code === "expired") throw new CnbError("设备码已过期，重新点一次登录即可")
+    throw new CnbError(
+      `token 请求失败（HTTP ${res.status}）：${res.json?.error_description || res.json?.error || res.text}`,
+    )
+  }
+  throw new CnbError("等待授权超时，重新点一次登录即可")
+}
+
+/**
+ * 「浏览器扫码登录」的完整流程：申请设备码 → 等授权 → 用拿到的令牌读账号 → 探测组织仓库。
+ * 全程不读也不写 ~/.cnb/token，所以这是唯一能反复登录不同账号的方式。
+ */
+async function loginViaDevice(options, ctx = {}) {
+  let dev
+  try {
+    dev = await requestDeviceCode({
+      platform: ctx.platform || WEB_BASE,
+      clientId: ctx.clientId || "cnb_cli",
+      signal: ctx.signal,
+    })
+  } catch (error) {
+    return { type: "failed", error: `${error?.message || error}。也可以改用「粘贴访问令牌」。` }
+  }
+
+  return {
+    url: dev.verificationUriComplete,
+    instructions: dev.userCode
+      ? `在打开的页面里确认授权（码 ${dev.userCode}），${Math.round(dev.expiresIn / 60)} 分钟内有效`
+      : "在打开的页面里确认授权",
+    method: "auto",
+    async callback() {
+      let token
+      try {
+        token = await pollDeviceToken(dev, { signal: ctx.signal })
+      } catch (error) {
+        return { type: "failed", error: String(error?.message || error).slice(0, 400) }
+      }
+
+      const access = String(token.access_token)
+      let user = null
+      try {
+        user = await fetchUser(access)
+      } catch {
+        user = null
+      }
+      if (!user) {
+        return { type: "failed", error: "授权成功但读不到账号信息（/user 失败），稍后重试或改用「粘贴访问令牌」" }
+      }
+
+      const groups = await fetchTopGroups(access)
+      const { org, repo } = scopeFor(options, groups)
+
+      return {
+        type: "success",
+        access,
+        refresh: String(token.refresh_token || ""),
+        expires: Date.now() + (Number(token.expires_in) || 28_800) * 1000,
+        accountId: user.username || "",
+        uid: String(user.id || user.username || ""),
+        org,
+        repo,
+        metadata: {
+          org,
+          repo,
+          username: user.username || "",
+          transport: options.transport,
+          loginMethod: "device",
+          clientId: dev.clientId,
+          groups: groups.map((g) => g.path),
+        },
+      }
+    },
+  }
+}
+
 function authMethods(options, ctx = {}) {
   return [
     // -----------------------------------------------------------------------
-    // 方式一：一键登录。0 个问题，读本机已有的 CNB 凭证；过期了自动用 refresh_token 续期。
+    // 方式一：浏览器授权（OAuth Device Flow）。
+    // 不读写 ~/.cnb/token，所以可以反复登录不同账号 —— 想加第二个、第三个账号就走这里。
     // -----------------------------------------------------------------------
     {
       type: "oauth",
-      label: "一键登录（读取本机已登录的 CNB 凭证）",
+      label: "浏览器授权登录（可加多个账号）",
+      async authorize() {
+        return loginViaDevice(options, ctx)
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // 方式二：一键登录，读本机 cnb-cli 已经登录的那个账号，过期自动续期。
+    // 只能读到 ~/.cnb/token 里的那一个账号，不适合加新账号。
+    // -----------------------------------------------------------------------
+    {
+      type: "oauth",
+      label: "用本机 cnb-cli 的凭证（跳过浏览器）",
       async authorize() {
         const local = readLocalCnbToken()
         return {
           url: ROUTES.token,
           instructions: local?.token
             ? "已在本机找到 CNB 凭证，正在校验（过期会自动续期）…"
-            : "本机没找到 CNB 凭证。刚打开的页面里可以生成一个访问令牌，复制后回来点「粘贴访问令牌」；或者装一下 CLI 再回来点这个按钮：npm i -g @cnbcool/cnb-cli && cnb login",
+            : "本机没找到 CNB 凭证。要加账号建议直接用上面那个「浏览器授权登录」；也可以装一下 CLI：npm i -g @cnbcool/cnb-cli && cnb login",
           method: "auto",
           async callback() {
             return authorizeFromLocal(options, ctx)
@@ -1312,7 +1506,7 @@ function authMethods(options, ctx = {}) {
     },
 
     // -----------------------------------------------------------------------
-    // 方式二：一个输入框。PAT 和 CNBSESSION 都接受，插件在运行时自己认。
+    // 方式三：一个输入框。PAT 和 CNBSESSION 都接受，插件在运行时自己认。
     //
     // ⚠️ 这里绝对不能加 authorize，也不要加 prompts：
     //   magpie 的 apiKey() 只把 prompts 的答案作为 inputs 传给 authorize
@@ -1328,6 +1522,35 @@ function authMethods(options, ctx = {}) {
       placeholder: "CNB 访问令牌（在 cnb.cool/profile/token 生成）或浏览器里的 CNBSESSION 值",
     },
   ]
+}
+
+/**
+ * 把一串凭证的"长相"说清楚 —— 用户粘错东西时，光说"无效"等于什么都没说。
+ * CNB 访问令牌：94 字符左右，以 cnb_at_ 开头。
+ * CNBSESSION   ：三段，数字.数字.<长 hex>。
+ */
+function describeCredentialShape(raw) {
+  const v = String(raw || "").trim()
+  const segs = v.split(".")
+  return {
+    length: v.length,
+    hasAccessTokenPrefix: /^cnb_(at|rt)_/.test(v),
+    hasDot: segs.length > 1,
+    segments: segs.length,
+    sessionLike:
+      segs.length === 3 && /^\d+$/.test(segs[0]) && /^\d+$/.test(segs[1]) && /^[0-9a-fA-F]{16,}$/.test(segs[2] || ""),
+  }
+}
+
+/** 把 shape 翻译成一句人话。 */
+function explainShape(shape) {
+  const parts = []
+  parts.push(`你给的是 ${shape.length} 个字符`)
+  if (shape.hasAccessTokenPrefix) parts.push("带 cnb_at_/cnb_rt_ 前缀")
+  else if (shape.sessionLike) parts.push("看着像 CNBSESSION")
+  else if (!shape.hasDot) parts.push("没有点号分段")
+  else parts.push(`${shape.segments} 段`)
+  return parts.join("、")
 }
 
 async function identifyCredential(raw, { signal } = {}) {
@@ -1350,7 +1573,7 @@ async function identifyCredential(raw, { signal } = {}) {
     htmlLength = 0
   }
 
-  return { kind: "invalid", patError, htmlLength }
+  return { kind: "invalid", patError, htmlLength, shape: describeCredentialShape(value) }
 }
 
 function scopeFor(options, groups) {
@@ -1438,8 +1661,8 @@ async function authorizeFromLocal(options, ctx = {}) {
         String(meta.file).replace(/^.*[\\/]/, "…/") +
         " 最后修改于 " +
         when +
-        " —— 在浏览器里换账号不会更新这个文件，它只由终端的 cnb login 写。" +
-        "要加新账号：① 终端跑 cnb login 换账号后再点「一键登录」；② 直接点「粘贴访问令牌」—— 你浏览器里现在登录的就是新账号，打开 https://cnb.cool/profile/token 生成一个粘进去即可。" +
+        "（在浏览器里换账号不会更新这个文件，它只由终端的 cnb login 写。）" +
+        "要加新账号：点上面的「浏览器授权登录」—— 浏览器里确认一次就行，不碰本机文件，加几个账号都可以。" +
         (others.length ? "（当前已有账号：" + [username, ...others].join("、") + "）" : ""),
     }
   }
@@ -1562,9 +1785,12 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
           if (account.kind === "invalid") {
             return {
               error:
-                "粘贴的凭证无效：既不是可用的访问令牌，也不是有效的 CNBSESSION。" +
-                "访问令牌在 https://cnb.cool/profile/token 生成（复制完整、别含空格）；" +
-                "CNBSESSION 要确认 cnb.cool 还处于登录状态。",
+                "粘贴的凭证无效：" +
+                (account.shape ? explainShape(account.shape) + "。" : "") +
+                (account.shape?.hasAccessTokenPrefix
+                  ? "格式是 CNB 的令牌，但已被撤销或过期 —— 去 https://cnb.cool/profile/token 重新生成一个。"
+                  : "CNB 访问令牌是 94 字符左右、以 cnb_at_ 开头；CNBSESSION 是三段（数字.数字.<长 hex>）。" +
+                    "到 https://cnb.cool/profile/token 生成一个再粘；或者直接用「浏览器授权登录」，连粘都不用。"),
               signIn: "expired",
               windows: [],
             }
@@ -1889,8 +2115,12 @@ export const _internal = Object.freeze({
   MODEL_SPECS,
   ROUTES,
   OAUTH_TOKEN_URL,
+  DEVICE_GRANT,
   CnbError,
   authorizeFromLocal,
+  loginViaDevice,
+  pollDeviceToken,
+  requestDeviceCode,
   cachedCredential,
   ensureCredential,
   rawCredentialOf,
@@ -1900,6 +2130,8 @@ export const _internal = Object.freeze({
   cliTokenFile,
   configModels,
   createRepo,
+  describeCredentialShape,
+  explainShape,
   describeLocalTokenProbe,
   foldSse,
   grabCsrf,

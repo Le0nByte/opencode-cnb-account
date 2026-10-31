@@ -80,7 +80,7 @@ section("2b. 登录流程不能有冗余步骤")
 // 这条是硬要求：用户抱怨过"点下一步、下一步"。登录方式里出现 prompts 就是回归。
 const promptCount = (hooks.auth.methods || []).reduce((n, m) => n + (m.prompts || []).length, 0)
 ok("登录方式里没有任何 prompts（不该出现「下一步」按钮）", promptCount === 0, `发现 ${promptCount} 个 prompt`)
-ok("登录方式最多 2 个", (hooks.auth.methods || []).length <= 2, String((hooks.auth.methods || []).length))
+ok("登录方式不超过 3 个", (hooks.auth.methods || []).length <= 3, String((hooks.auth.methods || []).length))
 ok("有且仅有一个需要用户输入的方式", (hooks.auth.methods || []).filter((m) => m.type === "api").length === 1)
 ok(
   "需要输入的方式给了明确 placeholder",
@@ -88,6 +88,24 @@ ok(
 )
 ok("一键登录是 oauth + auto callback（点一下就走完）", (hooks.auth.methods || []).some((m) => m.type === "oauth"))
 ok("auth.refresh 存在（令牌过期能自动续期）", typeof hooks.auth.refresh === "function")
+
+// 「加第二个账号」只能靠 device flow —— 它不碰 ~/.cnb/token，登录多少次都行。
+const deviceMethod = (hooks.auth.methods || []).find((m) => m.type === "oauth" && /浏览器/.test(m.label || ""))
+ok("有一个浏览器授权（device flow）登录方式", Boolean(deviceMethod), (hooks.auth.methods || []).map((m) => m.label).join(" / "))
+ok("device flow 方式是 oauth + auto callback", deviceMethod?.type === "oauth")
+ok("requestDeviceCode 是函数", typeof mod._internal.requestDeviceCode === "function")
+ok("pollDeviceToken 是函数", typeof mod._internal.pollDeviceToken === "function")
+ok("loginViaDevice 是函数", typeof mod._internal.loginViaDevice === "function")
+ok(
+  "device flow 用的是实测过的 /oauth2/device/auth 端点",
+  /oauth2\/device\/auth/.test(mod._internal.requestDeviceCode.toString()),
+)
+ok(
+  "device flow 用 RFC 8628 的 grant_type",
+  mod._internal.DEVICE_GRANT === "urn:ietf:params:oauth:grant-type:device_code",
+  String(mod._internal.DEVICE_GRANT),
+)
+
 ok("refreshLead 有设置", Number(hooks.auth.refreshLead) > 0, String(hooks.auth.refreshLead))
 
 // 一键登录必须能读懂 cnb-cli 的嵌套结构 —— 这里放一份实测抓到的样例
