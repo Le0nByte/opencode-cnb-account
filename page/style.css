@@ -1,0 +1,132 @@
+/* CNB 账户页样式。magpie 的 bridge 会给一份零权重的 :where() 基础样式，
+   这里只用 --magpie-* 变量保持和窗口一致，其余一律自己写。 */
+
+:root {
+  --cnb-ok: #17a673;
+  --cnb-ok-bg: rgba(23, 166, 115, 0.12);
+  --cnb-warn: #d98200;
+  --cnb-warn-bg: rgba(217, 130, 0, 0.12);
+  --cnb-bad: #d64545;
+  --cnb-bad-bg: rgba(214, 69, 69, 0.12);
+  --cnb-line: var(--magpie-border, rgba(127, 127, 127, 0.22));
+  --cnb-fg: var(--magpie-fg, #1c1c1e);
+  --cnb-dim: rgba(127, 127, 127, 0.9);
+  --cnb-accent: var(--magpie-accent, #2f6bff);
+  --cnb-card: var(--magpie-surface, rgba(127, 127, 127, 0.06));
+}
+
+* { box-sizing: border-box; }
+
+body.cnb {
+  margin: 0;
+  padding: 16px 18px 28px;
+  font: 13px/1.55 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: var(--cnb-fg);
+  background: transparent;
+}
+
+.cnb-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--cnb-line);
+}
+
+.cnb-avatar {
+  width: 44px; height: 44px; border-radius: 12px;
+  object-fit: cover; background: var(--cnb-card); flex: 0 0 auto;
+}
+
+.cnb-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cnb-name { font-size: 15px; font-weight: 650; letter-spacing: .1px; }
+.cnb-sub { font-size: 11.5px; color: var(--cnb-dim); word-break: break-all; }
+
+.cnb-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2.5px 9px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600; line-height: 1.6;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.badge.success { color: var(--cnb-ok); background: var(--cnb-ok-bg); border-color: rgba(23,166,115,.3); }
+.badge.info    { color: var(--cnb-accent); background: rgba(47,107,255,.1); border-color: rgba(47,107,255,.28); }
+.badge.muted   { color: var(--cnb-dim); background: var(--cnb-card); border-color: var(--cnb-line); }
+
+.cnb-section { margin-top: 18px; }
+.cnb-section > h2 {
+  margin: 0 0 8px; font-size: 12px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: .08em; color: var(--cnb-dim);
+}
+
+.cnb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 8px; }
+
+.stat {
+  padding: 10px 12px; border: 1px solid var(--cnb-line);
+  border-radius: 10px; background: var(--cnb-card);
+}
+.stat .k { font-size: 11px; color: var(--cnb-dim); }
+.stat .v { font-size: 17px; font-weight: 660; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat .u { font-size: 11px; font-weight: 500; color: var(--cnb-dim); margin-left: 3px; }
+
+.meter { margin-top: 10px; }
+.meter .bar {
+  height: 7px; border-radius: 999px; overflow: hidden;
+  background: rgba(127,127,127,.2);
+}
+.meter .fill { height: 100%; border-radius: 999px; background: var(--cnb-accent); transition: width .35s ease; }
+.meter .fill.hot { background: var(--cnb-warn); }
+.meter .fill.full { background: var(--cnb-bad); }
+.meter .cap { display: flex; justify-content: space-between; font-size: 11px; color: var(--cnb-dim); margin-top: 5px; }
+
+table.entries { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.entries th {
+  text-align: left; font-weight: 600; font-size: 11px; color: var(--cnb-dim);
+  padding: 6px 8px; border-bottom: 1px solid var(--cnb-line); white-space: nowrap;
+}
+table.entries td { padding: 9px 8px; border-bottom: 1px solid var(--cnb-line); vertical-align: top; }
+table.entries tr:last-child td { border-bottom: 0; }
+table.entries td.title { font-weight: 600; white-space: nowrap; }
+table.entries td.desc { color: var(--cnb-dim); font-size: 11.5px; }
+table.entries td.reward { color: var(--cnb-dim); font-size: 11.5px; min-width: 140px; }
+
+a.entry {
+  color: var(--cnb-accent); text-decoration: none; font-weight: 600; white-space: nowrap;
+  border-bottom: 1px dashed currentColor; cursor: pointer;
+}
+a.entry:hover { opacity: .78; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+button.cnb {
+  appearance: none; cursor: pointer;
+  padding: 7px 13px; border-radius: 9px; font-size: 12.5px; font-weight: 600;
+  color: var(--cnb-fg); background: var(--cnb-card);
+  border: 1px solid var(--cnb-line);
+  transition: border-color .15s, transform .06s;
+}
+button.cnb:hover { border-color: var(--cnb-accent); }
+button.cnb:active { transform: translateY(1px); }
+button.cnb.primary { background: var(--cnb-accent); border-color: var(--cnb-accent); color: #fff; }
+
+.cmd {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+  border: 1px dashed var(--cnb-line); background: var(--cnb-card);
+  font: 11.5px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word; user-select: all;
+}
+.cmd:empty { display: none; }
+
+.note {
+  margin-top: 12px; font-size: 11.5px; line-height: 1.65; color: var(--cnb-dim);
+  border-left: 2px solid var(--cnb-line); padding-left: 10px;
+}
+.note b { color: var(--cnb-fg); }
+.err { color: var(--cnb-bad); }
+.mono { font-family: ui-monospace, Consolas, monospace; }
+
+/* 面板（slot: provider）里的紧凑版本：去掉每行的说明副标题，只留项目 / 状态 / 入口 / 奖励 */
+body.cnb-panel { padding: 12px 14px 16px; }
+body.cnb-panel .cnb-section:first-of-type { margin-top: 12px; }
+body.cnb-panel table.entries .desc,
+body.cnb-panel table.entries br { display: none; }

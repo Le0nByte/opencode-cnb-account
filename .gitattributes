@@ -1,0 +1,14 @@
+# 统一 LF：这个仓库要在 Linux/macOS/Windows 上都被 magpie 的 Bun 宿主加载，
+# 任何 CRLF 污染都会让 .mjs / .js 里的模板字符串出怪问题（CNB 手册 4.4 / 11.12 踩过同一个坑）。
+* text=auto eol=lf
+
+*.mjs  text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.html text eol=lf
+*.css  text eol=lf
+*.svg  text eol=lf
+
+*.png  binary
+*.tgz  binary

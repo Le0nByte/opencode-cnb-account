@@ -1,0 +1,62 @@
+{
+  "name": "opencode-cnb-account",
+  "version": "0.1.0",
+  "description": "Magpie / OpenCode provider plugin for CNB (cnb.cool): account login, identity badges, credit quota, repo bootstrap and AI relay",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "page",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "magpie",
+    "cnb",
+    "codebuddy"
+  ],
+  "license": "MIT",
+  "magpie": {
+    "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiMyZjZiZmYiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMwMGMyYTgiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cmVjdCB4PSIyIiB5PSIyIiB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHJ4PSIxNCIgZmlsbD0idXJsKCNnKSIvPjxwYXRoIGQ9Ik0xOCA0MlYyMmg2bDggMTIgOC0xMmg2djIwaC02VjMybC04IDExLTgtMTF2MTB6IiBmaWxsPSIjZmZmIiBvcGFjaXR5PSIuOTUiLz48L3N2Zz4=",
+    "maxConcurrency": 4,
+    "page": {
+      "title": "CNB 账户",
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "titles": {
+        "zh": "CNB 账户",
+        "zh-TW": "CNB 帳戶",
+        "en": "CNB account",
+        "ja": "CNB アカウント"
+      }
+    },
+    "panels": [
+      {
+        "slot": "provider",
+        "file": "page/panel.html",
+        "title": "CNB 认证与积分"
+      }
+    ],
+    "permissions": [
+      "usage:summary"
+    ],
+    "options": {
+      "org": "",
+      "repo": "",
+      "transport": "auto",
+      "relay": {
+        "url": "",
+        "key": ""
+      },
+      "claim": {
+        "url": "",
+        "method": "POST",
+        "body": "{}"
+      },
+      "autoCreateRepo": false,
+      "repoName": "code",
+      "visibility": "private"
+    }
+  }
+}

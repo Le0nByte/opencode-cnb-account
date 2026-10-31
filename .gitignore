@@ -1,0 +1,33 @@
+# 依赖
+node_modules/
+bun.lock
+bun.lockb
+package-lock.json
+pnpm-lock.yaml
+
+# 本地预览 / 截图（用 scripts/preview 重新生成，不提交）
+_preview/
+*.local.png
+
+# 打包产物
+*.tgz
+dist/
+.pack/
+
+# 系统噪音
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 日志
+*.log
+npm-debug.log*
+
+# 本地覆盖的选项 / 快照（含账号信息，绝不入库）
+options.local.json
+state.local.js

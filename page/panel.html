@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CNB 认证与积分</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="_magpie/bridge.js"></script>
+  <script src="state.js"></script>
+  <script src="app.js" defer></script>
+</head>
+<body class="cnb cnb-panel">
+  <header class="cnb-head">
+    <img class="cnb-avatar" id="avatar" alt="" hidden>
+    <div class="cnb-id">
+      <div class="cnb-name" id="name">CNB 账户</div>
+      <div class="cnb-sub" id="sub">正在读取快照…</div>
+    </div>
+  </header>
+
+  <div class="cnb-badges" id="badges"></div>
+
+  <section class="cnb-section">
+    <h2>当月积分</h2>
+    <div class="cnb-grid" id="stats"></div>
+    <div class="meter" id="meter" hidden>
+      <div class="bar"><div class="fill" id="fill" style="width:0%"></div></div>
+      <div class="cap"><span id="meter-left"></span><span id="meter-right"></span></div>
+    </div>
+  </section>
+
+  <section class="cnb-section">
+    <h2>认证入口与积分奖励</h2>
+    <table class="entries">
+      <thead>
+        <tr><th>项目</th><th>状态</th><th>入口</th><th>积分奖励</th></tr>
+      </thead>
+      <tbody id="entries"></tbody>
+    </table>
+  </section>
+
+  <section class="cnb-section">
+    <div class="actions">
+      <button class="cnb primary" id="btn-login">一键登录</button>
+      <button class="cnb" id="btn-repo">创建仓库</button>
+      <button class="cnb" id="btn-claim">领取积分</button>
+      <button class="cnb" id="btn-quota">额度页</button>
+      <button class="cnb" id="btn-refresh">刷新快照</button>
+    </div>
+    <div class="cmd" id="cmd"></div>
+    <div class="note" id="note"></div>
+  </section>
+</body>
+</html>
