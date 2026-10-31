@@ -22,7 +22,7 @@ const NPM = "@ai-sdk/openai-compatible"
 const WEB_BASE = "https://cnb.cool"
 const API_BASE = "https://api.cnb.cool"
 const DEFAULT_MODEL = "deepseek-v4.1-flash"
-const PLUGIN_VERSION = "0.3.0"
+const PLUGIN_VERSION = "0.3.1"
 const USER_AGENT = `opencode-cnb-account/${PLUGIN_VERSION}`
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -79,6 +79,20 @@ const GENIUS_EDU_LABELS = Object.freeze({
 
 const GENIUS_BADGE = "天才程序员"
 const DEFAULT_VISIBILITY = "private"
+
+/**
+ * 只有访问令牌（PAT）时，AI 通道是走不通的 —— 实测 api.cnb.cool 回的原文是：
+ *   403 {"errcode":403,"errmsg":"[NO_RIGHT]OpenAPI only allowed in pipeline"}
+ * 与其让用户发消息时吃一个看不懂的 403/404，不如把两条真路直接写出来。
+ */
+const AI_NEEDS_CHANNEL = [
+  "AI 通道还没配好：现在只有访问令牌（PAT）。",
+  "api.cnb.cool 的 AI 端点官方写明「仅允许在 CNB 流水线内用 CNB_TOKEN 调用」，个人 PAT 直连会被拒（403 OpenAPI only allowed in pipeline）。",
+  "两条路任选一条：",
+  "① Cookie 通道（本机自用最省事）：浏览器登录 cnb.cool → F12 → Application/存储 → Cookies → https://cnb.cool →",
+  "   复制 CNBSESSION 的值（很长，形如 123456.789012.<hex>）→ 回 magpie 点「粘贴访问令牌」粘进去。",
+  "② 中继机（路线 A，支持工具调用）：在插件选项里配 relay.url 和 relay.key，指向你部署好的中继。",
+].join("\n")
 
 const DEFAULT_OPTIONS = Object.freeze({
   org: "",
@@ -275,15 +289,35 @@ async function ensureCredential(auth, { signal } = {}) {
   const metadata = auth?.metadata && typeof auth.metadata === "object" ? auth.metadata : {}
   // 一键登录存下来的是 oauth 凭证，metadata 里已经写全了，不用再识别
   if (metadata.loginMethod === "local" || auth?.type === "oauth") {
-    return {
+    // 一键登录 / 浏览器授权登录存下来的账号，metadata 里已经有 org 和 username。
+    // 但 metadata.repo 是「登录那一刻」算的，可能早就过时（甚至当时是猜的 <org>/code），
+    // 所以这里再问一次真实仓库列表，别让一个不存在的路径把 AI 请求打成 404。
+    const org = String(metadata.org || "").replace(/^\/+|\/+$/g, "")
+    const snapshotRepo = String(metadata.repo || "").replace(/^\/+|\/+$/g, "")
+    let repos = []
+    try {
+      repos = org ? await listRepos(raw, org, { signal }) : []
+    } catch {
+      repos = []
+    }
+    const snapshotAlive =
+      snapshotRepo && repos.some((r) => r === snapshotRepo || r.endsWith("/" + snapshotRepo.split("/").pop()))
+    const firstRepo = repos.find((r) => r && r.includes("/")) || repos[0] || ""
+    const repo = String(
+      (snapshotAlive ? snapshotRepo : "") || firstRepo || (org ? org + "/" + (metadata.repoName || "code") : ""),
+    ).replace(/^\/+|\/+$/g, "")
+    const record = {
       kind: "pat",
       raw,
       token: raw,
       username: String(metadata.username || auth?.accountId || ""),
-      org: String(metadata.org || "").replace(/^\/+|\/+$/g, ""),
-      repo: String(metadata.repo || "").replace(/^\/+|\/+$/g, ""),
+      org,
+      repo,
+      repos,
       source: "local",
     }
+    credentialCache.set(raw, record)
+    return record
   }
 
   const cached = credentialCache.get(raw)
@@ -299,7 +333,15 @@ async function ensureCredential(auth, { signal } = {}) {
     const groups = await fetchTopGroups(raw, { signal })
     record.groups = groups
     record.org = String(metadata.org || groups[0]?.path || "").replace(/^\/+|\/+$/g, "")
-    record.repo = String(metadata.repo || (record.org ? record.org + "/" + (metadata.repoName || "code") : "")).replace(/^\/+|\/+$/g, "")
+    // 仓库名不能靠猜：组织下第一个真实可见的仓库，取不到才退回 repoName
+    const realRepos = record.org ? await listRepos(raw, record.org, { signal }) : []
+    const firstRepo = realRepos.find((r) => r && r.includes("/")) || realRepos[0] || ""
+    const snapshotRepo = String(metadata.repo || "").replace(/^\/+|\/+$/g, "")
+    const snapshotAlive =
+      snapshotRepo && realRepos.some((r) => r === snapshotRepo || r.endsWith("/" + snapshotRepo.split("/").pop()))
+    record.repo = String(
+      (snapshotAlive ? snapshotRepo : "") || firstRepo || (record.org ? record.org + "/" + (metadata.repoName || "code") : ""),
+    ).replace(/^\/+|\/+$/g, "")
   } else if (who.kind === "session") {
     record.session = raw
     record.csrfkey = String(who.csrf?.csrfkey || "")
@@ -353,8 +395,8 @@ function resolveAccount(auth) {
     token,
     session,
     csrfkey,
-    org: String(auth?.org || metadata.org || cached?.org || "").trim().replace(/^\/+|\/+$/g, ""),
-    repo: String(auth?.repo || metadata.repo || cached?.repo || "").trim().replace(/^\/+|\/+$/g, ""),
+    org: String(cached?.org || auth?.org || metadata.org || "").trim().replace(/^\/+|\/+$/g, ""),
+    repo: String(cached?.repo || auth?.repo || metadata.repo || "").trim().replace(/^\/+|\/+$/g, ""),
     username: String(auth?.accountId || metadata.username || cached?.username || "").trim(),
     ...(cached?.shape ? { shape: cached.shape } : {}),
   }
@@ -363,6 +405,10 @@ function pickTransport(account, options) {
   if (options.transport !== "auto") return options.transport
   if (options.relay.url) return "relay"
   if (account.session) return "cookie"
+  // 只剩访问令牌。api.cnb.cool 的 AI 端点官方写明「仅允许在流水线内用 CNB_TOKEN 调用」，
+  // 个人 PAT 打过去必然 403 [NO_RIGHT]OpenAPI only allowed in pipeline。
+  // 与其发出去再报一个看不懂的 403，不如直接标成不可用，把两条真路说清楚。
+  if (account.token) return "unavailable"
   return "direct"
 }
 
@@ -1274,7 +1320,7 @@ function buildDirectFetch({ account, options, getAuth }) {
     if (!response.ok) {
       const body = await readBody(response)
       return chatError(
-        `api.cnb.cool ${response.status}：${errorText(body)}\n官方文档写明 /-/ai/chat/completions 仅允许在 CNB 流水线内用 CNB_TOKEN 调用；个人 PAT 直连会被拒。请改用 transport=relay（路线 A）或 cookie（路线 B）。`,
+        `api.cnb.cool ${response.status}：${errorText(body)}\n\n` + AI_NEEDS_CHANNEL,
         { status: response.status, type: "cnb_error", signIn: loginBroken(response.status, body) ? "expired" : undefined },
       )
     }
@@ -1444,7 +1490,7 @@ async function loginViaDevice(options, ctx = {}) {
       }
 
       const groups = await fetchTopGroups(access)
-      const { org, repo } = scopeFor(options, groups)
+      const { org, repo } = await pickScope(options, groups, access)
 
       return {
         type: "success",
@@ -1576,10 +1622,20 @@ async function identifyCredential(raw, { signal } = {}) {
   return { kind: "invalid", patError, htmlLength, shape: describeCredentialShape(value) }
 }
 
-function scopeFor(options, groups) {
+/**
+ * 定下这次用哪个组织 / 哪个仓库。
+ * 以前是 org + "/code" 硬拼 —— 那个仓库根本不一定存在，结果 AI 请求 404 Resource not found。
+ * 现在去问真的：options.repo 优先，否则取该组织下第一个可见仓库。
+ */
+async function pickScope(options, groups, token, { signal } = {}) {
   const org = String(options.org || groups[0]?.path || "").replace(/^\/+|\/+$/g, "")
-  const repo = String(options.repo || (org ? org + "/" + options.repoName : "")).replace(/^\/+|\/+$/g, "")
-  return { org, repo }
+  const explicit = String(options.repo || "").replace(/^\/+|\/+$/g, "")
+  if (explicit) return { org: org || explicit.split("/")[0], repo: explicit }
+  if (!org) return { org: "", repo: "" }
+
+  const repos = token ? await listRepos(token, org, { signal }) : []
+  const first = repos.find((r) => r && r.includes("/")) || repos[0] || ""
+  return { org, repo: String(first || org + "/" + options.repoName).replace(/^\/+|\/+$/g, "") }
 }
 
 async function authorizeFromLocal(options, ctx = {}) {
@@ -1668,7 +1724,7 @@ async function authorizeFromLocal(options, ctx = {}) {
   }
 
   const groups = await fetchTopGroups(token)
-  const { org, repo } = scopeFor(options, groups)
+  const { org, repo } = await pickScope(options, groups, token)
 
   if (options.autoCreateRepo && org) {
     const existingRepos = await listRepos(token, org)
@@ -1759,6 +1815,13 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
           if (!base) return { baseURL: WEB_BASE, apiKey: account.token || PROVIDER_ID }
           return { baseURL: `${base}/v1`, apiKey: options.relay.key || PROVIDER_ID }
         }
+        if (transport === "unavailable") {
+          return {
+            baseURL: `${API_BASE}/-/ai`,
+            apiKey: PROVIDER_ID,
+            fetch: async () => chatError(AI_NEEDS_CHANNEL, { status: 503, type: "config_error" }),
+          }
+        }
         if (transport === "cookie") {
           const repo = repoPath(account, options)
           return {
@@ -1834,6 +1897,20 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
             display: parts.join(" / ") || "—",
           })
         }
+        // 账号卡片上直接标出 AI 通道能不能用，别等发消息才炸
+        const liveTransport = pickTransport(account, options)
+        windows.push({
+          name: "AI 通道",
+          aside: true,
+          display:
+            liveTransport === "relay"
+              ? "中继机（支持 tools）"
+              : liveTransport === "cookie"
+                ? "Cookie 直连（不支持 tools）"
+                : liveTransport === "unavailable"
+                  ? "未配置：只有 PAT，直连会被官方拒绝"
+                  : "直连 api.cnb.cool",
+        })
         for (const row of snapshot.sideQuotas || []) windows.push(row)
         if (!windows.length) {
           windows.push({ name: "AI Credit（当月）", display: "额度接口没返回数字（可能是组织 slug 不对）" })
@@ -2143,6 +2220,7 @@ export const _internal = Object.freeze({
   normalizeExpiry,
   parseTokenText,
   pickAuthEntry,
+  pickScope,
   pickTransport,
   publishState,
   readLocalCnbToken,

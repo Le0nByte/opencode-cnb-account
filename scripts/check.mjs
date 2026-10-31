@@ -142,6 +142,26 @@ ok("rawCredentialOf 认 key", mod._internal.rawCredentialOf({ key: "abc" }) === 
 ok("rawCredentialOf 认 access", mod._internal.rawCredentialOf({ access: "abc" }) === "abc")
 ok("rawCredentialOf 空输入返回空串", mod._internal.rawCredentialOf({}) === "" && mod._internal.rawCredentialOf(null) === "")
 ok("没识别过的凭证不进缓存", mod._internal.cachedCredential({ key: "never-seen-before" }) === null)
+// 仓库名不能靠猜：以前硬拼 <org>/code，那个仓库不存在，AI 请求会 404 Resource not found。
+ok("pickScope 是函数（仓库自动探测）", typeof mod._internal.pickScope === "function")
+ok(
+  "pickScope 会去查真实仓库列表",
+  /listRepos/.test(mod._internal.pickScope.toString()),
+)
+// 只有 PAT 时直连 api.cnb.cool 必被拒（403 OpenAPI only allowed in pipeline），不能再标成 direct。
+ok(
+  "只有 PAT 时通道判定为 unavailable",
+  mod._internal.pickTransport({ token: "t", session: "" }, mod._internal.normaliseOptions({})) === "unavailable",
+)
+ok(
+  "有 CNBSESSION 时走 cookie",
+  mod._internal.pickTransport({ token: "", session: "s" }, mod._internal.normaliseOptions({})) === "cookie",
+)
+ok(
+  "配了 relay 时走 relay",
+  mod._internal.pickTransport({ token: "t", session: "" }, mod._internal.normaliseOptions({ relay: { url: "https://r.example.com" } })) === "relay",
+)
+
 ok("ensureCredential 是函数", typeof mod._internal.ensureCredential === "function")
 
 // identity_providers 为 null 时，靠特权额度说明兜底出徽章（实测账号就是这样）

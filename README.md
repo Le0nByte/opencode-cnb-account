@@ -39,7 +39,7 @@ m quota
 自检：
 
 ```bash
-node scripts/check.mjs     # 184 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
+node scripts/check.mjs     # 189 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
 ```
 
 ---
@@ -263,6 +263,36 @@ magpie 的插件页面跑在 `sandbox="allow-scripts"` + `connect-src 'none'` �
 
 ---
 
+### AI 通道为什么会被官方拒绝
+
+只有访问令牌（PAT）时，**AI 请求一定失败**，这是 CNB 官方的限制，不是插件的问题：
+
+```
+POST api.cnb.cool/{org}/{repo}/-/ai/chat/completions
+→ 403 {"errcode":403,"errmsg":"[NO_RIGHT]OpenAPI only allowed in pipeline"}
+```
+
+所以插件不会再发这个注定被拒的请求，而是把两条真路直接摆出来（账号卡片上也会标「AI 通道: 未配置」）：
+
+- **Cookie 通道**：浏览器登录 cnb.cool → F12 → Application/存储 → Cookies → `https://cnb.cool` → 复制 `CNBSESSION` 的值 → 回 magpie 点「粘贴访问令牌」粘进去
+- **中继机**（路线 A，支持 tools）：选项里配 `relay.url` 和 `relay.key`
+
+> 早期版本会把这类请求直接发出去，拿到的是 `404 Resource not found`（仓库名猜错）或 `403 [NO_RIGHT]`（PAT 直连），两者都不好懂。
+
+### 仓库名是问出来的，不是猜的
+
+以前 AI 路径按 `<组织>/code` 硬拼，那个仓库根本不一定存在 —— 于是 404。
+
+现在按这个顺序定：
+
+1. 插件选项里的 `repo`（你显式配的，最优先）
+2. 组织下**第一个真实可见的仓库**（`GET /{org}/-/repos`）
+3. 都没有才退回 `<组织>/<repoName>`
+
+登录时存下的 `metadata.repo` 也会被校验：如果那个仓库在列表里已经不存在，就丢弃它、改用探测到的。所以换过仓库名之后 AI 通道会自己跟上，不需要重新登录。
+
+---
+
 ## 7. 创建仓库
 
 三条路，按可靠性排序：
@@ -365,7 +395,7 @@ opencode-cnb-account/
 │   │                   state.js 是宿主写出的运行时快照，已在 .gitignore 里
 │   └── icon.svg          插件图标
 ├── scripts/
-│   ├── check.mjs         184 项自检
+│   ├── check.mjs         189 项自检
 │   └── push.mjs          一条命令推到 GitHub
 ├── PUSH-TO-GITHUB.md     推送的三种方式（HTTPS token / SSH / gh CLI）
 ├── .gitignore .gitattributes   统一 LF（Windows 上编辑不会污染模板字符串）
