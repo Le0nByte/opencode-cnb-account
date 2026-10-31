@@ -4,10 +4,10 @@
 //  1. magpie 只调用 config / auth(methods,loader,usage,refresh,checkin) / provider.models / chat.headers / tool。
 //  2. 插件页面跑在 sandbox="allow-scripts" + connect-src 'none' 的框架里，页面**不能发网络请求**。
 //     所以所有 CNB 网络调用都发生在宿主侧（Bun），页面只读宿主写出的 page/state.js 快照。
-//  3. AI 通道有三条，由 transport 决定：
-//       relay  —— 路线 A（官方工作区 + 中继机），OpenAI 兼容，原生 tools。
-//       cookie —— 路线 B（浏览器登录态直连 cnb.cool/<org>/<repo>/-/ai/chat/completions），不支持 tools。
-//       direct —— 直连 api.cnb.cool，官方文档写明只允许在流水线内用 CNB_TOKEN 调用（保留用于实验/流水线环境）。
+//  3. AI 通道有两条，由 transport 决定：
+//       cookie —— 直连 https://cnb.cool/<org>/<repo>/-/ai/chat/completions，用 CNBSESSION，不支持 tools。
+//                 个人访问令牌（PAT）调不了模型 —— 所有路径实测都是 403，所以没有 third 通道。
+//       relay  —— 指向你自建的中继（OpenAI 兼容），支持 tools。
 //  4. 上游只吃 stream:true；非流式请求由本插件把 SSE 折叠成一次性 JSON。
 //  5. 所有请求必须带 User-Agent，否则 Cloudflare 回 403 error 1010。
 
@@ -22,7 +22,7 @@ const NPM = "@ai-sdk/openai-compatible"
 const WEB_BASE = "https://cnb.cool"
 const API_BASE = "https://api.cnb.cool"
 const DEFAULT_MODEL = "deepseek-v4.1-flash"
-const PLUGIN_VERSION = "0.3.1"
+const PLUGIN_VERSION = "0.3.2"
 const USER_AGENT = `opencode-cnb-account/${PLUGIN_VERSION}`
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -85,19 +85,17 @@ const DEFAULT_VISIBILITY = "private"
  *   403 {"errcode":403,"errmsg":"[NO_RIGHT]OpenAPI only allowed in pipeline"}
  * 与其让用户发消息时吃一个看不懂的 403/404，不如把两条真路直接写出来。
  */
-const AI_NEEDS_CHANNEL = [
-  "AI 通道还没配好：现在只有访问令牌（PAT）。",
-  "api.cnb.cool 的 AI 端点官方写明「仅允许在 CNB 流水线内用 CNB_TOKEN 调用」，个人 PAT 直连会被拒（403 OpenAPI only allowed in pipeline）。",
-  "两条路任选一条：",
-  "① Cookie 通道（本机自用最省事）：浏览器登录 cnb.cool → F12 → Application/存储 → Cookies → https://cnb.cool →",
-  "   复制 CNBSESSION 的值（很长，形如 123456.789012.<hex>）→ 回 magpie 点「粘贴访问令牌」粘进去。",
-  "② 中继机（路线 A，支持工具调用）：在插件选项里配 relay.url 和 relay.key，指向你部署好的中继。",
+const NEED_SESSION = [
+  "还差一步：需要 CNBSESSION 才能调模型。",
+  "浏览器登录 cnb.cool → F12 → Application（应用）→ Cookies → https://cnb.cool",
+  "→ 复制 CNBSESSION 那一行的值（很长，形如 123456.789012.<hex>）",
+  "→ 回 magpie 点「粘贴访问令牌」粘进去即可。",
 ].join("\n")
 
 const DEFAULT_OPTIONS = Object.freeze({
   org: "",
   repo: "",
-  transport: "auto", // auto | relay | cookie | direct
+  transport: "auto", // auto | relay | cookie
   relay: { url: "", key: "" },
   claim: { url: "", method: "POST", body: "{}" },
   autoCreateRepo: false,
@@ -127,7 +125,7 @@ function normaliseOptions(raw) {
   out.org = String(out.org || "").trim().replace(/^\/+|\/+$/g, "")
   out.repo = String(out.repo || "").trim().replace(/^\/+|\/+$/g, "")
   out.transport = String(out.transport || "auto").toLowerCase()
-  if (!["auto", "relay", "cookie", "direct"].includes(out.transport)) out.transport = "auto"
+  if (!["auto", "relay", "cookie"].includes(out.transport)) out.transport = "auto"
   out.relay = { url: String(src.relay?.url || "").trim(), key: String(src.relay?.key || "").trim() }
   out.claim = {
     url: String(src.claim?.url || "").trim(),
@@ -389,27 +387,41 @@ function resolveAccount(auth) {
     session = String(metadata.session || "").trim()
   }
 
+  let org = String(cached?.org || auth?.org || metadata.org || "").trim().replace(/^\/+|\/+$/g, "")
+  let repo = String(cached?.repo || auth?.repo || metadata.repo || "").trim().replace(/^\/+|\/+$/g, "")
+
+  // 只粘了 CNBSESSION 的账号查不了 /user/groups（api.cnb.cool 不吃 cookie），
+  // 于是拿不到组织仓库。这种时候借本机任何一个已识别的访问令牌账号探测到的仓库 ——
+  // 同一台机器、同一个组织，凭据不同不影响仓库路径。
+  if (!repo) {
+    for (const record of credentialCache.values()) {
+      if (record && record.kind === "pat" && record.repo) {
+        org = org || record.org || ""
+        repo = record.repo
+        break
+      }
+    }
+  }
+
   return {
     raw,
     kind: isOauth ? "local" : cached?.kind || (token ? "pat" : session ? "session" : "unknown"),
     token,
     session,
     csrfkey,
-    org: String(cached?.org || auth?.org || metadata.org || "").trim().replace(/^\/+|\/+$/g, ""),
-    repo: String(cached?.repo || auth?.repo || metadata.repo || "").trim().replace(/^\/+|\/+$/g, ""),
+    org,
+    repo,
     username: String(auth?.accountId || metadata.username || cached?.username || "").trim(),
     ...(cached?.shape ? { shape: cached.shape } : {}),
   }
 }
 function pickTransport(account, options) {
-  if (options.transport !== "auto") return options.transport
+  if (options.transport === "relay" || options.transport === "cookie") return options.transport
   if (options.relay.url) return "relay"
   if (account.session) return "cookie"
-  // 只剩访问令牌。api.cnb.cool 的 AI 端点官方写明「仅允许在流水线内用 CNB_TOKEN 调用」，
-  // 个人 PAT 打过去必然 403 [NO_RIGHT]OpenAPI only allowed in pipeline。
-  // 与其发出去再报一个看不懂的 403，不如直接标成不可用，把两条真路说清楚。
-  if (account.token) return "unavailable"
-  return "direct"
+  // 只剩访问令牌。个人令牌调不了模型（所有路径实测都是 403），
+  // 所以不标成任何通道，直接要 CNBSESSION。
+  return "need-session"
 }
 
 function repoPath(account, options) {
@@ -1282,56 +1294,6 @@ function buildCookieFetch({ account, options, getAuth }) {
   }
 }
 
-function buildDirectFetch({ account, options, getAuth }) {
-  return async function directFetch(input, init = {}) {
-    const auth = await getAuth()
-    await ensureCredential(auth)
-    const live = resolveAccount(auth)
-    const token = live.token || account.token
-    const repo = repoPath(live, options)
-    if (!token) return chatError("未登录 CNB", { status: 401, type: "auth_error", signIn: "expired" })
-    if (!repo) return chatError("缺少仓库路径：在插件选项里填 org/repo", { status: 400, type: "config_error" })
-
-    let payload
-    try {
-      payload = await requestBody(input, init)
-    } catch (error) {
-      return chatError(`请求体解析失败：${error.message}`, { status: 400, type: "invalid_request_error" })
-    }
-    const wantedStream = payload.stream === true
-    const clean = { ...payload, stream: true }
-    delete clean.tools
-    delete clean.tool_choice
-    delete clean.stream_options
-
-    let response
-    try {
-      response = await fetch(`${API_BASE}/${repo}/-/ai/chat/completions`, {
-        method: "POST",
-        headers: baseHeaders({ "Content-Type": "application/json", Authorization: `Bearer ${token}` }),
-        body: JSON.stringify(clean),
-        signal: init.signal,
-      })
-    } catch (error) {
-      if (error?.name === "AbortError") throw error
-      return chatError(`连不上 api.cnb.cool：${error?.message || error}`)
-    }
-
-    if (!response.ok) {
-      const body = await readBody(response)
-      return chatError(
-        `api.cnb.cool ${response.status}：${errorText(body)}\n\n` + AI_NEEDS_CHANNEL,
-        { status: response.status, type: "cnb_error", signIn: loginBroken(response.status, body) ? "expired" : undefined },
-      )
-    }
-    if (wantedStream) {
-      return new Response(response.body, { status: 200, headers: { "Content-Type": "text/event-stream; charset=utf-8" } })
-    }
-    const folded = await foldSse(response, String(clean.model || DEFAULT_MODEL))
-    return jsonResponse(folded, 200, { "X-Magpie-Sign-In": "kept" })
-  }
-}
-
 // ---------------------------------------------------------------------------
 // 登录
 // ---------------------------------------------------------------------------
@@ -1815,11 +1777,11 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
           if (!base) return { baseURL: WEB_BASE, apiKey: account.token || PROVIDER_ID }
           return { baseURL: `${base}/v1`, apiKey: options.relay.key || PROVIDER_ID }
         }
-        if (transport === "unavailable") {
+        if (transport === "need-session") {
           return {
-            baseURL: `${API_BASE}/-/ai`,
+            baseURL: `${WEB_BASE}/-/ai`,
             apiKey: PROVIDER_ID,
-            fetch: async () => chatError(AI_NEEDS_CHANNEL, { status: 503, type: "config_error" }),
+            fetch: async () => chatError(NEED_SESSION, { status: 503, type: "config_error" }),
           }
         }
         if (transport === "cookie") {
@@ -1832,9 +1794,9 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
         }
         const repo = repoPath(account, options)
         return {
-          baseURL: repo ? `${API_BASE}/${repo}/-/ai` : `${API_BASE}/-/ai`,
-          apiKey: account.token || PROVIDER_ID,
-          fetch: buildDirectFetch({ account, options, getAuth }),
+          baseURL: repo ? `${WEB_BASE}/${repo}/-/ai` : `${WEB_BASE}/-/ai`,
+          apiKey: PROVIDER_ID,
+          fetch: buildCookieFetch({ account, options, getAuth }),
         }
       },
 
@@ -1906,10 +1868,8 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
             liveTransport === "relay"
               ? "中继机（支持 tools）"
               : liveTransport === "cookie"
-                ? "Cookie 直连（不支持 tools）"
-                : liveTransport === "unavailable"
-                  ? "未配置：只有 PAT，直连会被官方拒绝"
-                  : "直连 api.cnb.cool",
+                ? "Cookie 直连（可用）"
+                : "缺 CNBSESSION，点「粘贴访问令牌」补上",
         })
         for (const row of snapshot.sideQuotas || []) windows.push(row)
         if (!windows.length) {

@@ -39,7 +39,7 @@ m quota
 自检：
 
 ```bash
-node scripts/check.mjs     # 189 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
+node scripts/check.mjs     # 191 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
 ```
 
 ---
@@ -134,17 +134,18 @@ grant_type=refresh_token & refresh_token=… & client_id=cnb_cli
 
 ---
 
-## 3. AI 通道：三条，能力不同
+## 3. AI 通道：两条
 
-插件按 `transport` 选通道；`auto` 的判定顺序是 **relay → cookie → direct**。
+插件按 `transport` 选通道；`auto` 的判定顺序是 **relay → cookie**。
+
+> 个人访问令牌（PAT）**调不了模型**——所有路径实测都是 403，所以插件里根本不提供这条通道。要跑模型只需要 `CNBSESSION`（cookie）或一个中继（relay）。
 
 | transport | 端点 | tools | 说明 |
 |---|---|---|---|
 | `relay` | 你的中继机 `/v1/chat/completions` | ✅ 原生 | 路线 A。中继机本身就是 OpenAI 兼容网关，插件直通，不碰 CNB 鉴权 |
 | `cookie` | `https://cnb.cool/{org}/{repo}/-/ai/chat/completions` | ❌ | 路线 B。带 `CNBSESSION` + `Csrftoken`，上游结构性拒绝 tools（`403 Agent calls are not allowed`），插件会**提前**返回 403 说明，而不是静默降级 |
-| `direct` | `https://api.cnb.cool/{org}/{repo}/-/ai/chat/completions` | ❌ | 保留通道。官方文档写明「仅允许在 CNB 流水线内用 CNB_TOKEN 调用」，个人 PAT 直连会被拒，插件会把这句话原样回给你 |
 
-三条通道都做了两件事：
+两条通道都做了两件事：
 
 1. **恒以 `stream:true` 调上游**（上游对非流式直接回 `code 11101`），
 2. 客户端要非流式时，把 SSE **折叠**成一次性 `chat.completion`（`choices[0].message.content`、`finish_reason`、`tool_calls` 都会还原）。
@@ -395,7 +396,7 @@ opencode-cnb-account/
 │   │                   state.js 是宿主写出的运行时快照，已在 .gitignore 里
 │   └── icon.svg          插件图标
 ├── scripts/
-│   ├── check.mjs         189 项自检
+│   ├── check.mjs         191 项自检
 │   └── push.mjs          一条命令推到 GitHub
 ├── PUSH-TO-GITHUB.md     推送的三种方式（HTTPS token / SSH / gh CLI）
 ├── .gitignore .gitattributes   统一 LF（Windows 上编辑不会污染模板字符串）

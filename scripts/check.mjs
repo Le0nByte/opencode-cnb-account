@@ -148,10 +148,18 @@ ok(
   "pickScope 会去查真实仓库列表",
   /listRepos/.test(mod._internal.pickScope.toString()),
 )
-// 只有 PAT 时直连 api.cnb.cool 必被拒（403 OpenAPI only allowed in pipeline），不能再标成 direct。
+// 个人访问令牌调不了模型（所有路径实测 403），所以通道只剩 cookie / relay。
 ok(
-  "只有 PAT 时通道判定为 unavailable",
-  mod._internal.pickTransport({ token: "t", session: "" }, mod._internal.normaliseOptions({})) === "unavailable",
+  "只有 PAT、没有 CNBSESSION 时判定为 need-session",
+  mod._internal.pickTransport({ token: "t", session: "" }, mod._internal.normaliseOptions({})) === "need-session",
+)
+ok(
+  "transport 白名单里已经没有 direct",
+  mod._internal.normaliseOptions({ transport: "direct" }).transport === "auto",
+)
+ok(
+  "没有任何代码再调用 buildDirectFetch",
+  !/buildDirectFetch/.test(readFileSync(join(ROOT, "index.mjs"), "utf8")),
 )
 ok(
   "有 CNBSESSION 时走 cookie",
