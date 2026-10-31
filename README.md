@@ -39,7 +39,7 @@ m quota
 自检：
 
 ```bash
-node scripts/check.mjs     # 146 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
+node scripts/check.mjs     # 170 项：钩子形状、沙箱约束、徽章判定、SSE 折叠、路由、id 交叉校验
 ```
 
 ---
@@ -79,6 +79,35 @@ CNB 的访问令牌只有 8 小时（`expires_in ≈ 28800`），`cnb-cli` 把�
 登录成功后，账号卡片的 `plan` 显示认证徽章串（如 `天才程序员 · 高校老师`），`user` 显示 CNB 用户名，`balance` 显示总额度。
 
 > 徽章来源：`/user` 的 `identity_providers`；它为空时退回 `/charge/special-amount` 的 `credit_desc`（实测有个「天才程序员专属特权」的账号 `identity_providers` 就是 `null`，只能靠这条兜底）。
+
+---
+
+### 想加第二个账号？
+
+「一键登录」**只能登录 `~/.cnb/token` 里那一个账号**。这个文件只由终端的 `cnb login` 写 —— **在浏览器里换账号不会更新它**。
+
+所以如果你在网页上换了账号、然后回 magpie 点「一键登录」想加第二个，插件会明确拦下来，而不是假装成功（magpie 按 `accountId` 去重，同一个 `accountId` 只会**替换**旧账号）：
+
+> 读出来的仍然是「xiaopangdev」，和你已经登录的账号是同一个，magpie 会按 accountId 把它覆盖掉，加不进第二个。本机 …/token 最后修改于 2026-10-31 14:39:43 —— 在浏览器里换账号不会更新这个文件，它只由终端的 cnb login 写。要加新账号：① 终端跑 cnb login 换账号后再点「一键登录」；② 直接点「粘贴访问令牌」—— 你浏览器里现在登录的就是新账号，打开 https://cnb.cool/profile/token 生成一个粘进去即可。
+
+两条正路：
+
+1. **终端 `cnb login` 换成新账号** → 再点「一键登录」。新账号成为 `~/.cnb/token` 的当前账号；旧账号的令牌已经存进 magpie 的 `plugin-auth.json`，照常自动续期，不受影响。
+2. **粘令牌**：用新账号在浏览器打开 <https://cnb.cool/profile/token> 生成一个 PAT → magpie 里点「粘贴访问令牌」。
+
+> 还有一个已经堵掉的坑：插件不会把 A 账号续期后的令牌写进 B 账号的文件。写回 `~/.cnb/token` 前会校验里面的令牌确实属于当前账号（`refresh_token` 或 `access_token` 对得上），对不上就不写 —— 否则 A 续期一次，B 的「一键登录」就会读到 A，正是「加了新账号却登录成旧账号」的成因。
+
+### 令牌文件被读写的时间线
+
+`~/.cnb/token` 的修改时间是个有用的线索：
+
+| 你做了什么 | 文件会变吗 |
+|---|---|
+| 网页上登录 / 换账号 | ❌ 不变 |
+| 终端 `cnb login` | ✅ 变（mtime 更新） |
+| 插件自动续期（同源校验通过） | ✅ 变（写前备份 `token.bak-YYYYMMDD`） |
+| 插件自动续期（文件已被别的账号占用） | ❌ 不变（拒绝写，避免串号） |
+
 
 ---
 
@@ -294,6 +323,7 @@ magpie 的插件页面跑在 `sandbox="allow-scripts"` + `connect-src 'none'` �
 4. **`CNBSESSION` 会过期**，没有自动续期。失效时插件会判 `signIn: "expired"` 并让 magpie 把账号标记成需要重新登录。
 5. **`online` 状态不会自己刷新**：`signIn` 只在 401/403 且报错提到 token/login/session 时才标 `expired`，报「模型不可用」的 401 按 `kept` 处理，避免一次故障把账号全标红。
 6. **`special-amount` 需要根组织 master 权限**，无权限时该字段为空，界面显示「—」而不是 0。
+7. **「一键登录」只能登录 `~/.cnb/token` 里那一个账号** —— 它只由终端的 `cnb login` 写，网页换账号不会更新。多账号请用「粘贴访问令牌」，详见第 2 节。
 
 ---
 
@@ -312,7 +342,7 @@ opencode-cnb-account/
 │   │                   state.js 是宿主写出的运行时快照，已在 .gitignore 里
 │   └── icon.svg          插件图标
 ├── scripts/
-│   ├── check.mjs         146 项自检
+│   ├── check.mjs         170 项自检
 │   └── push.mjs          一条命令推到 GitHub
 ├── PUSH-TO-GITHUB.md     推送的三种方式（HTTPS token / SSH / gh CLI）
 ├── .gitignore .gitattributes   统一 LF（Windows 上编辑不会污染模板字符串）

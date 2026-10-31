@@ -11,7 +11,7 @@
 //  4. 上游只吃 stream:true；非流式请求由本插件把 SSE 折叠成一次性 JSON。
 //  5. 所有请求必须带 User-Agent，否则 Cloudflare 回 403 error 1010。
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -22,7 +22,7 @@ const NPM = "@ai-sdk/openai-compatible"
 const WEB_BASE = "https://cnb.cool"
 const API_BASE = "https://api.cnb.cool"
 const DEFAULT_MODEL = "deepseek-v4.1-flash"
-const PLUGIN_VERSION = "0.2.0"
+const PLUGIN_VERSION = "0.2.1"
 const USER_AGENT = `opencode-cnb-account/${PLUGIN_VERSION}`
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -575,13 +575,30 @@ async function refreshCnbToken({ refresh, clientId = "cnb_cli", signal } = {}) {
  * 把刷新后的令牌写回 ~/.cnb/token，让 cnb-cli 也跟着新 —— 不然用户 CLI 那边还是过期的。
  * 写之前备份成 token.bak-YYYYMMDD（和 cnb-cli 自己的命名一致）。失败就算了，不影响登录。
  */
-function writeBackCliToken(fresh) {
+/**
+ * 把刷新后的令牌写回 ~/.cnb/token，让 cnb-cli 也跟着新 —— 不然用户 CLI 那边还是过期的。
+ * 写之前备份成 token.bak-YYYYMMDD（和 cnb-cli 自己的命名一致）。失败就算了，不影响登录。
+ *
+ * ⚠️ 写回前必须确认「文件里这个令牌确实属于当前账号」。
+ * 多账号场景下，A 账号续期会把 A 的令牌盖进文件；如果文件本来属于 B（用户刚 cnb login 换过账号），
+ * 下次点「一键登录」读到的就是 A —— 表现正是「加了新账号却登录成旧账号」。
+ * 无法确认归属时一律不写，宁可让 cnb-cli 那边过期，也不能污染别人的令牌。
+ */
+function writeBackCliToken(fresh, { ownerRefresh, ownerAccess } = {}) {
+  if (!fresh?.access) return false
+  if (!ownerRefresh && !ownerAccess) return false
   const file = cliTokenFile()
   try {
     if (!existsSync(file)) return false
     const json = JSON.parse(readFileSync(file, "utf8"))
     const entry = pickAuthEntry(json)
     if (!entry) return false
+
+    const sameOwner =
+      (ownerRefresh && entry.refresh_token && entry.refresh_token === ownerRefresh) ||
+      (ownerAccess && entry.access_token && entry.access_token === ownerAccess)
+    if (!sameOwner) return false
+
     const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "")
     const backup = `${file}.bak-${stamp}`
     if (!existsSync(backup)) copyFileSync(file, backup)
@@ -593,6 +610,42 @@ function writeBackCliToken(fresh) {
   } catch {
     return false
   }
+}
+
+/** 本机令牌文件的元信息：改没改过，是判断"用户到底有没有换账号"的唯一客观依据。 */
+function tokenFileMeta() {
+  const file = cliTokenFile()
+  try {
+    if (!existsSync(file)) return { file, exists: false, mtime: null, size: 0 }
+    const st = statSync(file)
+    return { file, exists: true, mtime: st.mtime, size: st.size }
+  } catch {
+    return { file, exists: false, mtime: null, size: 0 }
+  }
+}
+
+/**
+ * magpie 已经给这个供应商存了哪些账号。
+ * magpie 的去重规则是：新登录的 accountId 与已有账号相同时「替换」而不是「新增」，
+ * 所以插件必须自己知道"这个账号已经在了"，否则用户点「添加账号」只会把旧的覆盖一遍。
+ */
+function readMagpieAccounts(magpieDir) {
+  const out = new Set()
+  if (!magpieDir) return out
+  try {
+    const file = join(magpieDir, "plugin-auth.json")
+    if (!existsSync(file)) return out
+    const auth = JSON.parse(readFileSync(file, "utf8"))
+    for (const [key, value] of Object.entries(auth || {})) {
+      if (key !== PROVIDER_ID && !key.startsWith(PROVIDER_ID + "#")) continue
+      if (!value || typeof value !== "object") continue
+      const id = value.accountId || value.metadata?.username || ""
+      if (id) out.add(String(id))
+    }
+  } catch {
+    /* 读不到就当不知道，不影响登录 */
+  }
+  return out
 }
 
 /** 抓首页拿 csrftoken（HTML 里的 window.csrftoken="…"）与 csrfkey（Set-Cookie）。 */
@@ -1137,7 +1190,7 @@ function buildDirectFetch({ account, options, getAuth }) {
 // ---------------------------------------------------------------------------
 // 登录
 // ---------------------------------------------------------------------------
-function authMethods(options) {
+function authMethods(options, ctx = {}) {
   return [
     // -----------------------------------------------------------------------
     // 方式一：一键登录。0 个问题，读本机已有的 CNB 凭证；过期了自动用 refresh_token 续期。
@@ -1154,7 +1207,7 @@ function authMethods(options) {
             : "本机没找到 CNB 凭证。刚打开的页面里可以生成一个访问令牌，复制后回来点「粘贴访问令牌」；或者装一下 CLI 再回来点这个按钮：npm i -g @cnbcool/cnb-cli && cnb login",
           method: "auto",
           async callback() {
-            return authorizeFromLocal(options)
+            return authorizeFromLocal(options, ctx)
           },
         }
       },
@@ -1289,7 +1342,15 @@ function successFromSession({ options, session, csrf }) {
  * 一键登录的全部逻辑：读本机凭证 → 校验 → 过期就 refresh → 再校验 → 顺手探测组织和仓库。
  * 每一步失败都给出"接下来该做什么"，而不是一句"登录失败"。
  */
-async function authorizeFromLocal(options) {
+/**
+ * 一键登录的全部逻辑：读本机凭证 → 校验 → 过期就 refresh → 再校验 → 顺手探测组织和仓库。
+ *
+ * ⚠️ 这个方式天生只能登录「~/.cnb/token 里那一个账号」。多账号必须靠「粘贴访问令牌」，
+ * 或者在终端 `cnb login` 换成新账号。所以这里必须主动识别"你只是想加第二个账号，
+ * 但本机文件还是第一个"的情况 —— 否则 magpie 按 accountId 去重，会静默把旧账号覆盖一遍，
+ * 用户看到的是"登录成功"，实际账号没变。
+ */
+async function authorizeFromLocal(options, ctx = {}) {
   const local = readLocalCnbToken()
   if (!local || (!local.token && !local.refresh)) {
     const probe = describeLocalTokenProbe()
@@ -1307,6 +1368,9 @@ async function authorizeFromLocal(options) {
   let token = local.token || ""
   let refresh = local.refresh || ""
   let expires = local.expires || 0
+  // 记下刷新前的凭证，写回文件时用来确认"文件里这个令牌确实属于当前账号"
+  const ownerRefresh = refresh
+  const ownerAccess = token
   let user = null
   let refreshed = false
 
@@ -1327,7 +1391,7 @@ async function authorizeFromLocal(options) {
       refresh = fresh.refresh
       expires = fresh.expires
       refreshed = true
-      writeBackCliToken(fresh)
+      writeBackCliToken(fresh, { ownerRefresh, ownerAccess })
       try {
         user = await fetchUser(token)
       } catch {
@@ -1348,12 +1412,35 @@ async function authorizeFromLocal(options) {
     }
   }
 
+  // 3. ★ 这个账号已经在 magpie 里了 → 说明用户想要的"第二个账号"并没有进到本机文件
+  const username = String(user.username || local.accountId || "")
+  const existing = readMagpieAccounts(ctx.magpieDir)
+  if (username && existing.has(username)) {
+    const meta = tokenFileMeta()
+    const when = meta.mtime ? new Date(meta.mtime).toLocaleString("zh-CN") : "未知时间"
+    const others = [...existing].filter((u) => u !== username)
+    return {
+      type: "failed",
+      error:
+        "读出来的仍然是「" +
+        username +
+        "」，和你已经登录的账号是同一个，magpie 会按 accountId 把它覆盖掉，加不进第二个。" +
+        "本机 " +
+        String(meta.file).replace(/^.*[\\/]/, "…/") +
+        " 最后修改于 " +
+        when +
+        " —— 在浏览器里换账号不会更新这个文件，它只由终端的 cnb login 写。" +
+        "要加新账号：① 终端跑 cnb login 换账号后再点「一键登录」；② 直接点「粘贴访问令牌」—— 你浏览器里现在登录的就是新账号，打开 https://cnb.cool/profile/token 生成一个粘进去即可。" +
+        (others.length ? "（当前已有账号：" + [username, ...others].join("、") + "）" : ""),
+    }
+  }
+
   const groups = await fetchTopGroups(token)
   const { org, repo } = scopeFor(options, groups)
 
   if (options.autoCreateRepo && org) {
-    const existing = await listRepos(token, org)
-    if (!repoExists(existing, options.repoName)) {
+    const existingRepos = await listRepos(token, org)
+    if (!repoExists(existingRepos, options.repoName)) {
       await createRepo({ token, org, name: options.repoName, visibility: options.visibility })
     }
   }
@@ -1363,14 +1450,14 @@ async function authorizeFromLocal(options) {
     access: token,
     refresh,
     expires,
-    accountId: user.username || local.accountId || "cnb-user",
+    accountId: username || "cnb-user",
     uid: String(user.id || user.username || ""),
     org,
     repo,
     metadata: {
       org,
       repo,
-      username: user.username || "",
+      username,
       transport: options.transport,
       loginMethod: "local",
       source: local.source,
@@ -1393,6 +1480,11 @@ function repoExists(repos, name) {
 const CnbAccountPlugin = async (_input, pluginOptions) => {
   const options = normaliseOptions(pluginOptions)
 
+  // magpie 把自己的配置目录交给插件（PluginInput.directory）；读 plugin-auth.json
+  // 才知道这个供应商下已经登录过哪些账号 —— 这是判断「你在加第二个账号」的唯一依据。
+  const magpieDir = typeof _input?.directory === "string" ? _input.directory : ""
+  const context = { magpieDir }
+
   return {
     // --- 供应商声明 -----------------------------------------------------------
     config: async (cfg) => {
@@ -1408,7 +1500,7 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
     auth: {
       provider: PROVIDER_ID,
       maxConcurrency: 4,
-      methods: authMethods(options),
+      methods: authMethods(options, context),
 
       // magpie 会在 access_token 到期前替你续期，同一时间只续一次。
       // CNB 的令牌 8 小时（expires_in≈28800），提前半小时续。
@@ -1419,7 +1511,7 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
           clientId: auth?.metadata?.clientId || "cnb_cli",
         })
         if (!next) return undefined // 没什么可续的就什么都不返回，账号保持原样
-        writeBackCliToken(next)
+        writeBackCliToken(next, { ownerRefresh: auth?.refresh, ownerAccess: auth?.access })
         return { access: next.access, refresh: next.refresh, expires: next.expires }
       },
 
@@ -1797,9 +1889,11 @@ export const _internal = Object.freeze({
   publishState,
   readLocalCnbToken,
   refreshCnbToken,
+  readMagpieAccounts,
   repoPath,
   resolveAccount,
   STATE_FILE,
+  tokenFileMeta,
   writeBackCliToken,
 })
 

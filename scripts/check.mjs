@@ -2,7 +2,8 @@
 // 自检：按 magpie 的方式加载插件，校验钩子形状与页面沙箱约束。
 // 用法：node scripts/check.mjs
 
-import { existsSync, readFileSync, statSync } from "node:fs"
+import os from "node:os"
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -126,6 +127,45 @@ ok("已有徽章不重复叠加", mod._internal.badgesFromSpecialClaim("天才�
 ok("特权说明为空不造徽章", mod._internal.badgesFromSpecialClaim("", []).length === 0)
 
 // ---------------------------------------------------------------------------
+section("2c. 多账号：不能把第一个账号当成新账号")
+// magpie 按 accountId 去重，同一个 accountId 会「替换」而不是「新增」，
+// 所以插件必须自己知道已经登录过哪些账号，否则用户点「添加账号」只会把旧的覆盖一遍。
+const tmpMagpie = mkdtempSync(join(os.tmpdir(), "magpie-accounts-"))
+writeFileSync(
+  join(tmpMagpie, "plugin-auth.json"),
+  JSON.stringify({
+    cnb: { type: "oauth", accountId: "alice" },
+    "cnb#abc123": { type: "api", metadata: { username: "bob" } },
+    "other-provider": { accountId: "should-be-ignored" },
+  }),
+  "utf8",
+)
+const acc = mod._internal.readMagpieAccounts(tmpMagpie)
+ok("readMagpieAccounts 认出 cnb 主账号", acc.has("alice"), [...acc].join(","))
+ok("readMagpieAccounts 认出 cnb#xxx 副账号", acc.has("bob"))
+ok("readMagpieAccounts 不混入别的 provider", !acc.has("should-be-ignored"))
+ok("readMagpieAccounts 目录不存在时返回空集", mod._internal.readMagpieAccounts(join(tmpMagpie, "nope")).size === 0)
+rmSync(tmpMagpie, { recursive: true, force: true })
+
+// 写回 cnb-cli 的令牌必须确认归属：A 账号续期不能污染 B 账号的文件
+const fakeToken = { access: "cnb_at_fake", refresh: "cnb_rt_fake", expires: Date.now() + 3600_000 }
+ok(
+  "writeBackCliToken 不传 owner 时拒绝写回",
+  mod._internal.writeBackCliToken(fakeToken) === false,
+)
+ok(
+  "writeBackCliToken owner 不匹配时拒绝写回",
+  mod._internal.writeBackCliToken(fakeToken, { ownerRefresh: "belongs-to-someone-else" }) === false,
+)
+const meta = mod._internal.tokenFileMeta()
+ok("tokenFileMeta 返回 file/exists/mtime/size", ["file", "exists", "mtime", "size"].every((k) => k in meta))
+
+// 一键登录必须把 magpie 配置目录接进来才可能做上面的判断
+ok(
+  "authorizeFromLocal 接受 ctx（magpie 配置目录）参数",
+  /ctx/.test(mod._internal.authorizeFromLocal.toString()) && /magpieDir/.test(mod._internal.authorizeFromLocal.toString()),
+)
+
 section("3. config 钩子声明供应商")
 const cfg = {}
 await hooks.config(cfg)
