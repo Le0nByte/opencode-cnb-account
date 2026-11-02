@@ -356,6 +356,59 @@
     }
   }
 
+  // --- 多账号列表：宿主把每个账号的快照并进 state.accounts ----------------
+  function renderAccountList(state) {
+    var existing = document.querySelector(".cnb-accounts")
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing)
+    var book = state && state.accounts && typeof state.accounts === "object" ? state.accounts : null
+    var list = book ? Object.keys(book).map(function (k) { return book[k] }) : (state && state.account ? [state] : [])
+    list = list.filter(function (s) { return s && s.account && (s.account.username || s.account.id) })
+    if (list.length < 2) return
+
+    var host = el("section", "cnb-section cnb-accounts")
+    host.appendChild(el("h2", "", "账号（" + list.length + "）"))
+    var wrap = el("div", "cnb-account-list")
+    var current = String((state.account && state.account.username) || "")
+
+    list.forEach(function (snap) {
+      var a = snap.account || {}
+      var card = el("div", "cnb-account-card" + (a.username === current ? " on" : ""))
+      var head = el("div", "cnb-account-head")
+      head.appendChild(el("span", "cnb-account-name", a.nickname || a.username || "CNB 账号"))
+      head.appendChild(el("span", "cnb-account-user", "@" + (a.username || "?")))
+      if (a.username === current) head.appendChild(el("span", "cnb-account-tag", "最近刷新"))
+      card.appendChild(head)
+
+      var badges = el("div", "cnb-account-badges")
+      var earned = (a.badges || []).filter(function (b) { return b.earned !== false })
+      earned.forEach(function (b) { badges.appendChild(el("span", "cnb-account-badge", b.label)) })
+      if (!earned.length) badges.appendChild(el("span", "cnb-account-badge off", "无认证徽章"))
+      card.appendChild(badges)
+
+      var credit = snap.credit || {}
+      var numbers = el("div", "cnb-account-line")
+      numbers.textContent =
+        "AI Credit " + (credit.used == null ? "—" : credit.used) +
+        " / " + (credit.total == null ? "—" : credit.total) +
+        (credit.privilege ? "（特权 " + credit.privilege + "）" : "")
+      card.appendChild(numbers)
+
+      var ch = el("div", "cnb-account-line dim")
+      var scope = snap.scope || {}
+      ch.textContent =
+        "通道 " + (snap.transport || "auto") +
+        " · " + (scope.repo || scope.org || "未定范围") +
+        (a.verified ? " · 已实名" : "")
+      card.appendChild(ch)
+      wrap.appendChild(card)
+    })
+
+    host.appendChild(wrap)
+    var first = document.querySelector("body > .cnb-section")
+    if (first && first.parentNode) first.parentNode.insertBefore(host, first)
+    else document.body.appendChild(host)
+  }
+
   // --- AI 通道：中继 / CNBSESSION 的入口 -----------------------------------
   // 为什么要这个区块：magpie 的登录流程只在「登录」那一步给方式选择，
   // 登录完成后没有任何补/换凭据的入口（宿主 apiKey() 只有 auth.single=true 才覆盖老账号，
@@ -558,6 +611,7 @@
     renderAll(window.__CNB_STATE__ || {})
     bindActions(window.__CNB_STATE__ || {})
     renderMagpie()
+    renderAccountList(window.__CNB_STATE__ || {})
     mountChannel()
 
     var bridge = window.magpie
@@ -570,7 +624,10 @@
         return reloadState()
       })
       .then(function (st) {
-        if (st) renderAll(st)
+        if (st) {
+          renderAll(st)
+          renderAccountList(st)
+        }
       })
       .catch(function (error) {
         var sub = $("sub")

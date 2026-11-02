@@ -166,3 +166,17 @@ body.cnb-panel ol.steps li { margin-bottom: 6px; }
 select.cnb-input { cursor: pointer; }
 .cnb-channel .cnb-hint { margin-top: 4px; font-size: 12px; color: var(--cnb-dim); word-break: break-all; }
 .cnb-channel .actions { margin-top: 12px; flex-wrap: wrap; }
+
+/* --- 多账号列表（0.4.1）--- */
+.cnb-account-list { display: grid; gap: 10px; }
+.cnb-account-card { padding: 10px 12px; border: 1px solid var(--cnb-line); border-radius: 10px; background: var(--cnb-card); }
+.cnb-account-card.on { border-color: var(--cnb-accent); }
+.cnb-account-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cnb-account-name { font-weight: 600; }
+.cnb-account-user { font-size: 12px; color: var(--cnb-dim); }
+.cnb-account-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--cnb-ok-bg); color: var(--cnb-ok); }
+.cnb-account-badges { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+.cnb-account-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: rgba(127, 127, 127, 0.14); }
+.cnb-account-badge.off { color: var(--cnb-dim); }
+.cnb-account-line { margin-top: 6px; font-size: 12px; }
+.cnb-account-line.dim { color: var(--cnb-dim); }

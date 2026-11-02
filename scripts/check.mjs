@@ -322,6 +322,21 @@ ok(
 ok("package.json 预填中继地址", pkg.magpie.options.relay.url === mod._internal.RELAY_URL_DEFAULT, String(pkg.magpie.options.relay.url))
 ok("package.json 暴露 session / csrfkey 选项", "session" in pkg.magpie.options && "csrfkey" in pkg.magpie.options)
 
+// 二改：多账号快照
+ok("PLUGIN_VERSION 取自 package.json", mod._internal.PLUGIN_VERSION === pkg.version, mod._internal.PLUGIN_VERSION)
+const snapA = { generatedAt: "t1", transport: "relay", account: { username: "user-a", badges: [] }, credit: { total: 500 } }
+const snapB = { generatedAt: "t2", transport: "relay", account: { username: "user-b", badges: [] }, credit: { total: 100 } }
+const one = mod._internal.statePayload({}, snapA)
+ok("单账号：顶层就是快照，不带 accounts", one.account.username === "user-a" && !("accounts" in one), JSON.stringify(Object.keys(one)))
+const two = mod._internal.statePayload({ "user-a": snapA }, snapB)
+ok("两账号：带 accounts 表", two.accounts && Object.keys(two.accounts).length === 2, JSON.stringify(two.accounts && Object.keys(two.accounts)))
+ok("两账号：顶层是最近刷新的那个", two.account.username === "user-b")
+ok("两账号：老账号快照没被覆盖", two.accounts["user-a"].account.username === "user-a")
+ok("accounts 里不再嵌套 accounts", !("accounts" in two.accounts["user-a"]))
+const merged = mod._internal.mergeStateAccounts({ "user-a": snapA }, snapB)
+ok("mergeStateAccounts 幂等（同账号再刷不重复）", Object.keys(mod._internal.mergeStateAccounts(merged, snapB)).length === 2)
+ok("accountKeyOf 用 username", mod._internal.accountKeyOf(snapB) === "user-b")
+
 const credit = buildCreditView(
   { credit_in_milli: { total: 1_166_000, free: 500_000 } },
   { credit_in_milli: 250_000 },
