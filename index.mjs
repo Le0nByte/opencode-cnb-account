@@ -86,17 +86,30 @@ const DEFAULT_VISIBILITY = "private"
  * 与其让用户发消息时吃一个看不懂的 403/404，不如把两条真路直接写出来。
  */
 const NEED_SESSION = [
-  "还差一步：需要 CNBSESSION 才能调模型。",
-  "浏览器登录 cnb.cool → F12 → Application（应用）→ Cookies → https://cnb.cool",
-  "→ 复制 CNBSESSION 那一行的值（很长，形如 123456.789012.<hex>）",
-  "→ 回 magpie 点「粘贴访问令牌」粘进去即可。",
+  "还差一步：CNB 现在没有可用的 AI 通道（访问令牌只能读账号，调不了模型）。",
+  "两条路，任选一条，都不用重装插件：",
+  "① 中继机（推荐，支持 tools）：打开「CNB 账户」页 →「AI 通道」→ 填中继地址和 Key → 保存。",
+  "② CNBSESSION 直连（不支持 tools）：浏览器登录 cnb.cool → F12 → Application（应用）→ Cookies → https://cnb.cool",
+  "   → 复制 CNBSESSION 那一行的值（三段，形如 123456.789012.<hex>）→ 粘到同一处的 CNBSESSION 输入框 → 保存。",
+  "改完直接发一条消息即可，不需要重新登录、也不需要重新添加账号。",
 ].join("\n")
+
+/** 默认中继地址：本机 new-api 出口（可在「CNB 账户」页或插件选项里改）。 */
+const RELAY_URL_DEFAULT = "http://127.0.0.1:3000/v1"
+
+/** CSRF 配对缓存时间。CNB 的 csrftoken/csrfkey 会在会话里轮换，5 分钟够用也够稳。 */
+const CSRF_TTL_MS = 5 * 60_000
 
 const DEFAULT_OPTIONS = Object.freeze({
   org: "",
   repo: "",
   transport: "auto", // auto | relay | cookie
-  relay: { url: "", key: "" },
+  relay: { url: RELAY_URL_DEFAULT, key: "" },
+  // CNBSESSION 直连通道的凭证。放插件选项里而不是账号里：
+  // magpie 的 apiKey() 只在 auth.single=true 时覆盖老账号，否则永远新建账号，
+  // 已登录用户根本没有「给现有账号补 CNBSESSION」的入口。选项可以由插件自己的页面写（options.set）。
+  session: "",
+  csrfkey: "",
   claim: { url: "", method: "POST", body: "{}" },
   autoCreateRepo: false,
   repoName: "code",
@@ -126,7 +139,12 @@ function normaliseOptions(raw) {
   out.repo = String(out.repo || "").trim().replace(/^\/+|\/+$/g, "")
   out.transport = String(out.transport || "auto").toLowerCase()
   if (!["auto", "relay", "cookie"].includes(out.transport)) out.transport = "auto"
-  out.relay = { url: String(src.relay?.url || "").trim(), key: String(src.relay?.key || "").trim() }
+  // url 允许被显式清空（""= 不预填中继），只有键缺失时才用默认值
+  const relayUrl =
+    src.relay && Object.prototype.hasOwnProperty.call(src.relay, "url") ? src.relay.url : RELAY_URL_DEFAULT
+  out.relay = { url: String(relayUrl || "").trim(), key: String(src.relay?.key || "").trim() }
+  out.session = String(src.session || "").trim()
+  out.csrfkey = String(src.csrfkey || "").trim()
   out.claim = {
     url: String(src.claim?.url || "").trim(),
     method: String(src.claim?.method || "POST").toUpperCase(),
@@ -415,10 +433,22 @@ function resolveAccount(auth) {
     ...(cached?.shape ? { shape: cached.shape } : {}),
   }
 }
+/** 生效的 CNBSESSION：插件选项里的（页面填的）优先，其次是账号自带的。 */
+function sessionOf(account, options) {
+  return String(options?.session || account?.session || "").trim()
+}
+
+/** csrfkey 种子：只在选项/账号里明确写过时用；正常情况由 grabCsrf 从 Set-Cookie 取。 */
+function csrfSeedOf(account, options) {
+  return String(options?.csrfkey || account?.csrfkey || "").trim()
+}
+
 function pickTransport(account, options) {
   if (options.transport === "relay" || options.transport === "cookie") return options.transport
+  // auto 的顺序：中继 → CNBSESSION 直连 → 都没有。
+  // 中继优先的理由：它支持 tools；cookie 通道上游结构性拒绝工具调用。
   if (options.relay.url) return "relay"
-  if (account.session) return "cookie"
+  if (sessionOf(account, options)) return "cookie"
   // 只剩访问令牌。个人令牌调不了模型（所有路径实测都是 403），
   // 所以不标成任何通道，直接要 CNBSESSION。
   return "need-session"
@@ -816,6 +846,43 @@ async function grabCsrf(session, { signal } = {}) {
   }
   // 登录态有效性：匿名首页 ~145KB，登录态 ~350KB（手册 5.1 节实测）
   return { csrfToken: token, csrfkey: key, htmlLength: html.length, looksLoggedIn: html.length > 200_000 }
+}
+
+/**
+ * CSRF 配对缓存：{ csrftoken, csrfkey } 每 5 分钟刷一次。
+ *
+ * 渠道语义别搞混（这是原版插件的 bug）：
+ *   - 请求头 `Csrftoken` 必须是首页 window.csrftoken 的值
+ *   - `csrfkey` 只能作为 cookie 发
+ * 原版把 csrfkey 当 Csrftoken 发出去 → 上游一律 403，粘了 CNBSESSION 也调不动。
+ */
+const csrfCache = new Map()
+
+function dropCsrf(session) {
+  csrfCache.delete(String(session || ""))
+}
+
+async function ensureCsrf(session, { seedKey = "", force = false, signal } = {}) {
+  const key = String(session || "")
+  if (!key) throw new CnbError("缺少 CNBSESSION", { status: 401, signIn: "expired" })
+  const cached = csrfCache.get(key)
+  if (!force && cached && Date.now() - cached.at < CSRF_TTL_MS) return cached
+  const csrf = await grabCsrf(key, { signal })
+  if (!csrf.csrfToken) {
+    // 首页不给 csrftoken 基本只有一个原因：这条 CNBSESSION 已经不是登录态了。
+    throw new CnbError("没能从 cnb.cool 首页取到 csrftoken，CNBSESSION 可能已失效", {
+      status: 401,
+      signIn: "expired",
+    })
+  }
+  const record = {
+    csrfToken: csrf.csrfToken,
+    csrfkey: String(csrf.csrfkey || seedKey || ""),
+    htmlLength: csrf.htmlLength,
+    at: Date.now(),
+  }
+  csrfCache.set(key, record)
+  return record
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,11 +1286,11 @@ function buildCookieFetch({ account, options, getAuth }) {
     const auth = await getAuth()
     await ensureCredential(auth)
     const live = resolveAccount(auth)
-    const session = live.session || account.session
-    const csrfkey = live.csrfkey || account.csrfkey
+    const session = sessionOf(live, options)
+    const seedKey = csrfSeedOf(live, options)
     const repo = repoPath(live, options)
-    if (!session) return chatError("CNB 浏览器登录态缺失，请用「浏览器登录态」方式重新登录", { status: 401, type: "auth_error", signIn: "expired" })
-    if (!repo) return chatError("缺少仓库路径：在插件选项里填 org/repo，或登录时填写", { status: 400, type: "config_error" })
+    if (!session) return chatError(NEED_SESSION, { status: 503, type: "config_error" })
+    if (!repo) return chatError("缺少仓库路径：在「CNB 账户」页或插件选项里填 org/repo，或登录时填写", { status: 400, type: "config_error" })
 
     const url = requestUrl(input)
     if (!url.includes("/chat/completions")) return chatError(`不支持的路径：${url}`, { status: 404, type: "invalid_request_error" })
@@ -1237,7 +1304,7 @@ function buildCookieFetch({ account, options, getAuth }) {
     if (Array.isArray(payload.tools) && payload.tools.length) {
       // 路线 B 结构性拒绝 tools（403 Agent calls are not allowed），提前说清而不是静默降级。
       return chatError(
-        "CNB Cookie 通道不支持工具调用（上游返回 403 Agent calls are not allowed）。需要 tools 请把 transport 设为 relay 走路线 A（官方工作区 + 中继机），或在前置挂 ToolForge。",
+        "CNB Cookie 通道不支持工具调用（上游返回 403 Agent calls are not allowed）。需要 tools 就在「CNB 账户」页把中继地址填上走路线 A（官方工作区 + 中继机）。",
         { status: 403, type: "model_not_supported" },
       )
     }
@@ -1247,12 +1314,12 @@ function buildCookieFetch({ account, options, getAuth }) {
     const forbidden = ["tools", "tool_choice", "response_format", "stream_options"]
     for (const key of forbidden) delete clean[key]
 
-    const cookies = [`CNBSESSION=${session}`]
-    if (csrfkey) cookies.push(`csrfkey=${csrfkey}`)
-
-    let response
-    try {
-      response = await fetch(`${WEB_BASE}/${repo}/-/ai/chat/completions`, {
+    // Csrftoken 头用 csrftoken（首页 window.csrftoken），csrfkey 只进 Cookie。
+    const post = async (forceCsrf) => {
+      const csrf = await ensureCsrf(session, { seedKey, force: forceCsrf, signal: init.signal })
+      const cookies = [`CNBSESSION=${session}`]
+      if (csrf.csrfkey) cookies.push(`csrfkey=${csrf.csrfkey}`)
+      return fetch(`${WEB_BASE}/${repo}/-/ai/chat/completions`, {
         method: "POST",
         headers: baseHeaders({
           "Content-Type": "application/json",
@@ -1260,13 +1327,26 @@ function buildCookieFetch({ account, options, getAuth }) {
           Cookie: cookies.join("; "),
           Origin: WEB_BASE,
           Referer: `${WEB_BASE}/${repo}`,
-          ...(csrfkey ? { Csrftoken: csrfkey } : {}),
+          Csrftoken: csrf.csrfToken,
         }),
         body: JSON.stringify(clean),
         signal: init.signal,
       })
+    }
+
+    let response
+    try {
+      response = await post(false)
+      // 401/403 多半是 CSRF 配对轮换：换一对重发一次，别急着判登录失效。
+      if (response.status === 401 || response.status === 403) {
+        dropCsrf(session)
+        response = await post(true)
+      }
     } catch (error) {
       if (error?.name === "AbortError") throw error
+      if (error instanceof CnbError) {
+        return chatError(error.message, { status: error.status || 502, type: "auth_error", signIn: error.signIn })
+      }
       return chatError(`连不上 cnb.cool：${error?.message || error}`)
     }
 
@@ -1861,15 +1941,16 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
         }
         // 账号卡片上直接标出 AI 通道能不能用，别等发消息才炸
         const liveTransport = pickTransport(account, options)
+        const relayHost = stripV1(options.relay.url || "")
         windows.push({
           name: "AI 通道",
           aside: true,
           display:
             liveTransport === "relay"
-              ? "中继机（支持 tools）"
+              ? `中继 ${relayHost}${options.relay.key ? "" : "（缺 Key）"} · 支持 tools`
               : liveTransport === "cookie"
-                ? "Cookie 直连（可用）"
-                : "缺 CNBSESSION，点「粘贴访问令牌」补上",
+                ? `CNBSESSION 直连 · ${options.session ? "页面填的" : "账号自带"} · 不支持 tools`
+                : "未配置：在「CNB 账户」页填中继地址或 CNBSESSION",
         })
         for (const row of snapshot.sideQuotas || []) windows.push(row)
         if (!windows.length) {
@@ -2153,8 +2234,16 @@ export const _internal = Object.freeze({
   ROUTES,
   OAUTH_TOKEN_URL,
   DEVICE_GRANT,
+  NEED_SESSION,
+  RELAY_URL_DEFAULT,
+  CSRF_TTL_MS,
   CnbError,
   authorizeFromLocal,
+  buildCookieFetch,
+  dropCsrf,
+  ensureCsrf,
+  sessionOf,
+  csrfSeedOf,
   loginViaDevice,
   pollDeviceToken,
   requestDeviceCode,

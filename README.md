@@ -156,20 +156,41 @@ grant_type=refresh_token & refresh_token=… & client_id=cnb_cli
 
 ### 选项
 
-改 `~/.config/magpie/plugins.json` 里这一项的 `options`，或在应用里点「选项」：
+改 `~/.config/magpie/plugins.json` 里这一项的 `options`，或在应用里点「选项」，或者直接在「CNB 账户」页的 **AI 通道** 区块里改（推荐，见下）：
 
 ```json
 {
   "org": "my-org",
   "repo": "my-org/code",
   "transport": "auto",
-  "relay": { "url": "https://cnb.example.com/v1", "key": "<PROXY_KEY>" },
+  "relay": { "url": "http://127.0.0.1:3000/v1", "key": "<中继机的 Key>" },
+  "session": "<CNBSESSION，留空则不用直连通道>",
+  "csrfkey": "",
   "claim": { "url": "", "method": "POST", "body": "{}" },
   "autoCreateRepo": false,
   "repoName": "code",
   "visibility": "private"
 }
 ```
+
+### 在页面里填 CNBSESSION / 中继（0.4.0 起）
+
+**为什么要这样**：magpie 的登录流程只在「登录」那一步让你选方式，登录完成后**没有**给已有账号补/换凭据的入口 —— 宿主 `apiKey()` 里只有 `auth.single === true` 才会覆盖第一个账号，否则永远新建一个账号。所以「回 magpie 点『粘贴访问令牌』」这句提示对已登录用户是死路。0.4.0 把这几个值放进**插件选项**，由插件页直接写：
+
+「CNB 账户」页 → **AI 通道**：
+
+| 字段 | 作用 |
+| --- | --- |
+| 通道 | `自动`（有中继地址就走中继，否则 CNBSESSION）/ `只用中继` / `只用 CNBSESSION` |
+| 中继地址 | OpenAI 兼容网关，默认预填 `http://127.0.0.1:3000/v1` |
+| 中继 Key | 中继机要求的 Bearer Key，保存后只显示长度，不回显 |
+| CNBSESSION | 浏览器 Cookie 直连用；不支持 tools |
+
+保存走 bridge 的 `magpie.options.set()`（整对象替换，页面自己做 get → merge → set），保存后**不用重新登录、也不用重新添加账号**，直接发消息即可。
+
+`session` 的优先级：插件选项里的（页面填的）> 账号自带的（用「粘贴访问令牌」粘 CNBSESSION 生成的账号）。
+
+`auto` 的判定顺序是 **relay → cookie**：中继优先，因为它支持 tools；cookie 通道上游结构性拒绝工具调用。两条都没有时，`loader.fetch` 返回 503，提示会直接指向上面这张表里的两个入口。
 
 ---
 

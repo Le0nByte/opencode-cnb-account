@@ -150,3 +150,19 @@ body.cnb-panel .cnb-section:first-of-type { margin-top: 12px; }
 body.cnb-panel table.entries .desc,
 body.cnb-panel table.entries br { display: none; }
 body.cnb-panel ol.steps li { margin-bottom: 6px; }
+
+/* --- AI 通道表单（0.4.0）--- */
+.cnb-channel .cnb-field { margin: 10px 0; }
+.cnb-label { display: block; }
+.cnb-label-text { display: block; font-size: 12px; color: var(--cnb-dim); margin-bottom: 4px; }
+.cnb-input {
+  width: 100%; min-width: 0; padding: 7px 9px;
+  font: inherit; color: var(--cnb-fg);
+  background: var(--cnb-card);
+  border: 1px solid var(--cnb-line); border-radius: 8px;
+  outline: none;
+}
+.cnb-input:focus { border-color: var(--cnb-accent); }
+select.cnb-input { cursor: pointer; }
+.cnb-channel .cnb-hint { margin-top: 4px; font-size: 12px; color: var(--cnb-dim); word-break: break-all; }
+.cnb-channel .actions { margin-top: 12px; flex-wrap: wrap; }

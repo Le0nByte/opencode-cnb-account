@@ -356,6 +356,164 @@
     }
   }
 
+  // --- AI 通道：中继 / CNBSESSION 的入口 -----------------------------------
+  // 为什么要这个区块：magpie 的登录流程只在「登录」那一步给方式选择，
+  // 登录完成后没有任何补/换凭据的入口（宿主 apiKey() 只有 auth.single=true 才覆盖老账号，
+  // 否则永远新建账号）。而插件页有 bridge 的 magpie.options.set()，
+  // 所以把「中继地址 / 中继 Key / CNBSESSION」做成插件选项，在这里填、在这里改。
+  function optionsApi() {
+    var b = window.magpie
+    if (!b || !b.options || typeof b.options.get !== "function" || typeof b.options.set !== "function") return null
+    return b.options
+  }
+
+  function inputBox(type, placeholder) {
+    var node = document.createElement("input")
+    node.className = "cnb-input"
+    node.type = type
+    node.autocomplete = "off"
+    node.spellcheck = false
+    node.placeholder = placeholder
+    return node
+  }
+
+  function field(labelText, node, hint) {
+    var row = el("div", "cnb-field")
+    var lab = document.createElement("label")
+    lab.className = "cnb-label"
+    lab.appendChild(el("span", "cnb-label-text", labelText))
+    lab.appendChild(node)
+    row.appendChild(lab)
+    if (hint) row.appendChild(el("div", "cnb-hint", hint))
+    return row
+  }
+
+  function mountChannel() {
+    var host = el("section", "cnb-section cnb-channel")
+    host.appendChild(el("h2", "", "AI 通道"))
+
+    var api = optionsApi()
+    if (!api) {
+      host.appendChild(el("div", "cnb-hint", "当前 magpie 不支持页面写插件选项（bridge 没有 options.set）。"))
+      var tip = el("div", "cmd", "magpie plugin options opencode-cnb-account '{\"transport\":\"relay\"}'")
+      host.appendChild(tip)
+      insertChannelSection(host)
+      return
+    }
+
+    var select = document.createElement("select")
+    select.className = "cnb-input"
+      ;[
+        ["auto", "自动：先中继，再 CNBSESSION"],
+        ["relay", "只用中继机（支持 tools）"],
+        ["cookie", "只用 CNBSESSION 直连（不支持 tools）"]
+      ].forEach(function (pair) {
+        var o = document.createElement("option")
+        o.value = pair[0]
+        o.textContent = pair[1]
+        select.appendChild(o)
+      })
+
+    var relayUrl = inputBox("text", "http://127.0.0.1:3000/v1")
+    var relayKey = inputBox("password", "中继机的 Key（留空 = 不改）")
+    var session = inputBox("password", "CNBSESSION：123456.789012.<hex>")
+    var status = el("div", "cnb-hint", "读取中…")
+
+    var save = el("button", "cnb primary", "保存并生效")
+    var clearSession = el("button", "cnb", "清空 CNBSESSION")
+    var clearKey = el("button", "cnb", "清空中继 Key")
+
+    function fill(saved) {
+      var o = saved || {}
+      var relay = o.relay || {}
+      select.value = o.transport || "auto"
+      relayUrl.value = relay.url || ""
+      relayKey.placeholder = relay.key ? "已保存（" + String(relay.key).length + " 字符），留空不改" : "中继机的 Key"
+      session.placeholder = o.session ? "已保存（" + String(o.session).length + " 字符），留空不改" : "CNBSESSION：123456.789012.<hex>"
+      var snap = window.__CNB_STATE__ || {}
+      status.textContent =
+        "快照通道 " + (snap.transport || "auto") +
+        " · 中继 " + (relay.url ? relay.url : "未填") +
+        " · Key " + (relay.key ? "已配置" : "未配置") +
+        " · CNBSESSION " + (o.session ? "已配置" : "未配置")
+    }
+
+    function persist(mutate, okText) {
+      save.disabled = true
+      clearKey.disabled = true
+      clearSession.disabled = true
+      status.textContent = "保存中…"
+      api
+        .get()
+        .then(function (current) {
+          var next = Object.assign({}, current || {})
+          next.relay = Object.assign({}, next.relay || {})
+          mutate(next)
+          return api.set(next)
+        })
+        .then(function (saved) {
+          relayKey.value = ""
+          session.value = ""
+          fill(saved)
+          toast(okText)
+          status.textContent = status.textContent + " · 已保存，发一条消息验证"
+        })
+        .catch(function (e) {
+          status.textContent = "保存失败：" + (e && e.message ? e.message : e)
+        })
+        .then(function () {
+          save.disabled = false
+          clearKey.disabled = false
+          clearSession.disabled = false
+        })
+    }
+
+    save.addEventListener("click", function () {
+      persist(function (next) {
+        next.transport = select.value
+        next.relay.url = relayUrl.value.trim()
+        if (relayKey.value.trim()) next.relay.key = relayKey.value.trim()
+        if (session.value.trim()) next.session = session.value.trim()
+      }, "AI 通道已保存")
+    })
+
+    clearSession.addEventListener("click", function () {
+      persist(function (next) {
+        next.session = ""
+      }, "已清空 CNBSESSION")
+    })
+
+    clearKey.addEventListener("click", function () {
+      persist(function (next) {
+        next.relay.key = ""
+      }, "已清空中继 Key")
+    })
+
+    host.appendChild(field("通道", select, "自动 = 有中继地址就走中继，否则看 CNBSESSION。"))
+    host.appendChild(field("中继地址", relayUrl, "OpenAI 兼容网关，例如本机 new-api 的 /v1 出口。"))
+    host.appendChild(field("中继 Key", relayKey, "中继机要求的 Bearer Key。已保存的值不会回显。"))
+    host.appendChild(field("CNBSESSION", session, "浏览器登录 cnb.cool → F12 → Application → Cookies → https://cnb.cool → 复制 CNBSESSION 的值。"))
+    var actions = el("div", "actions")
+    actions.appendChild(save)
+    actions.appendChild(clearSession)
+    actions.appendChild(clearKey)
+    host.appendChild(actions)
+    host.appendChild(status)
+
+    api.get().then(fill).catch(function (e) {
+      status.textContent = "读取插件选项失败：" + (e && e.message ? e.message : e)
+    })
+
+    insertChannelSection(host)
+  }
+
+  function insertChannelSection(host) {
+    var anchor = $("cmd")
+    var section = anchor && anchor.closest ? anchor.closest(".cnb-section") : null
+    if (section && section.parentNode) section.parentNode.insertBefore(host, section)
+    else document.body.appendChild(host)
+  }
+
   // --- magpie 侧统计（需要 package.json 里声明 usage:summary） -----------
   function renderMagpie() {
     var host = $("mw")
@@ -400,6 +558,7 @@
     renderAll(window.__CNB_STATE__ || {})
     bindActions(window.__CNB_STATE__ || {})
     renderMagpie()
+    mountChannel()
 
     var bridge = window.magpie
     var start = bridge && bridge.ready ? bridge.ready : Promise.resolve(null)

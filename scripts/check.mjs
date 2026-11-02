@@ -150,8 +150,8 @@ ok(
 )
 // 个人访问令牌调不了模型（所有路径实测 403），所以通道只剩 cookie / relay。
 ok(
-  "只有 PAT、没有 CNBSESSION 时判定为 need-session",
-  mod._internal.pickTransport({ token: "t", session: "" }, mod._internal.normaliseOptions({})) === "need-session",
+  "只有 PAT、没有 CNBSESSION、也没配中继时判定为 need-session",
+  mod._internal.pickTransport({ token: "t", session: "" }, mod._internal.normaliseOptions({ relay: { url: "" } })) === "need-session",
 )
 ok(
   "transport 白名单里已经没有 direct",
@@ -162,8 +162,8 @@ ok(
   !/buildDirectFetch/.test(readFileSync(join(ROOT, "index.mjs"), "utf8")),
 )
 ok(
-  "有 CNBSESSION 时走 cookie",
-  mod._internal.pickTransport({ token: "", session: "s" }, mod._internal.normaliseOptions({})) === "cookie",
+  "有 CNBSESSION（且没配中继）时走 cookie",
+  mod._internal.pickTransport({ token: "", session: "s" }, mod._internal.normaliseOptions({ relay: { url: "" } })) === "cookie",
 )
 ok(
   "配了 relay 时走 relay",
@@ -298,8 +298,29 @@ ok("JSON token 解析", parseTokenText('{"access_token":"x","refresh_token":"y",
 
 const accCookie = resolveAccount({ type: "api", key: "sess", metadata: { session: "sess", csrfkey: "ck" } })
 ok("cookie 账号取到 session", accCookie.session === "sess" && accCookie.csrfkey === "ck")
-ok("auto + session → cookie", pickTransport(accCookie, normaliseOptions({})) === "cookie")
+ok("auto + session → cookie", pickTransport(accCookie, normaliseOptions({ relay: { url: "" } })) === "cookie")
 ok("auto + relay.url → relay", pickTransport(accCookie, normaliseOptions({ relay: { url: "https://r.example.com/v1" } })) === "relay")
+
+// 二改：中继优先 + CNBSESSION 放插件选项 + CSRF 语义
+ok("默认选项预填中继地址", normaliseOptions({}).relay.url === mod._internal.RELAY_URL_DEFAULT, normaliseOptions({}).relay.url)
+ok("auto 默认走中继（即使账号自带 session）", pickTransport(accCookie, normaliseOptions({})) === "relay")
+ok("显式 transport=cookie 不受中继影响", pickTransport(accCookie, normaliseOptions({ transport: "cookie" })) === "cookie")
+ok(
+  "options.session 能让 cookie 通道生效",
+  pickTransport({ token: "t", session: "" }, normaliseOptions({ relay: { url: "" }, session: "opt" })) === "cookie",
+)
+ok("sessionOf: 选项优先于账号", mod._internal.sessionOf({ session: "acct" }, { session: "opt" }) === "opt")
+ok("sessionOf: 选项为空时回落到账号", mod._internal.sessionOf({ session: "acct" }, { session: "" }) === "acct")
+ok("ensureCsrf / dropCsrf 已导出", typeof mod._internal.ensureCsrf === "function" && typeof mod._internal.dropCsrf === "function")
+const indexSrc = readFileSync(join(ROOT, "index.mjs"), "utf8")
+ok("Csrftoken 头用 csrftoken，不是 csrfkey", /Csrftoken:\s*csrf\.csrfToken/.test(indexSrc) && !/Csrftoken:\s*csrfkey/.test(indexSrc))
+ok("cookie 通道 401/403 会刷新 CSRF 再试一次", /dropCsrf\(session\)/.test(indexSrc))
+ok(
+  "NEED_SESSION 指向页面上的 AI 通道，不再让人点不存在的按钮",
+  /AI 通道/.test(mod._internal.NEED_SESSION) && !/点「粘贴访问令牌」/.test(mod._internal.NEED_SESSION),
+)
+ok("package.json 预填中继地址", pkg.magpie.options.relay.url === mod._internal.RELAY_URL_DEFAULT, String(pkg.magpie.options.relay.url))
+ok("package.json 暴露 session / csrfkey 选项", "session" in pkg.magpie.options && "csrfkey" in pkg.magpie.options)
 
 const credit = buildCreditView(
   { credit_in_milli: { total: 1_166_000, free: 500_000 } },

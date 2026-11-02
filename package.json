@@ -1,6 +1,6 @@
 {
   "name": "opencode-cnb-account",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Magpie / OpenCode provider plugin for CNB (cnb.cool): account login, identity badges, credit quota, repo bootstrap and AI relay",
   "type": "module",
   "main": "./index.mjs",
@@ -46,9 +46,11 @@
       "repo": "",
       "transport": "auto",
       "relay": {
-        "url": "",
+        "url": "http://127.0.0.1:3000/v1",
         "key": ""
       },
+      "session": "",
+      "csrfkey": "",
       "claim": {
         "url": "",
         "method": "POST",
