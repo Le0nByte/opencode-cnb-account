@@ -182,3 +182,4 @@ select.cnb-input { cursor: pointer; }
 .cnb-account-line.dim { color: var(--cnb-dim); }
 .cnb-account-card.clickable { cursor: pointer; }
 .cnb-account-card.clickable:hover { border-color: var(--cnb-accent); }
+.cnb-accounts .cnb-hint { margin-top: 10px; font-size: 12px; color: var(--cnb-dim); }
