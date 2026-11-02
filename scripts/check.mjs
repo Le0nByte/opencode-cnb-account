@@ -336,6 +336,9 @@ ok("accounts 里不再嵌套 accounts", !("accounts" in two.accounts["user-a"]))
 const merged = mod._internal.mergeStateAccounts({ "user-a": snapA }, snapB)
 ok("mergeStateAccounts 幂等（同账号再刷不重复）", Object.keys(mod._internal.mergeStateAccounts(merged, snapB)).length === 2)
 ok("accountKeyOf 用 username", mod._internal.accountKeyOf(snapB) === "user-b")
+const appSrc = readFileSync(join(ROOT, "page/app.js"), "utf8")
+ok("卡片点击复制切换命令", /magpie accounts switch/.test(appSrc) && /card\.addEventListener\("click"/.test(appSrc))
+ok("明说插件页不能自己切账号", /没有给插件页开放/.test(appSrc))
 
 const credit = buildCreditView(
   { credit_in_milli: { total: 1_166_000, free: 500_000 } },

@@ -369,6 +369,7 @@
     host.appendChild(el("h2", "", "账号（" + list.length + "）"))
     var wrap = el("div", "cnb-account-list")
     var current = String((state.account && state.account.username) || "")
+    var provider = String((state.plugin && state.plugin.provider) || "cnb")
 
     list.forEach(function (snap) {
       var a = snap.account || {}
@@ -400,10 +401,28 @@
         " · " + (scope.repo || scope.org || "未定范围") +
         (a.verified ? " · 已实名" : "")
       card.appendChild(ch)
+
+      // 切账号是 magpie 宿主的事：插件页只有 options 读写和两个只读权限，
+      // 没有 switch 接口（pluginpages.js 的 method 白名单里没有它）。
+      // 所以卡片点一下 = 复制等效的 CLI 命令。
+      var command = "magpie accounts switch " + provider + " " + (a.username || "")
+      card.classList.add("clickable")
+      card.title = "点一下复制切换命令：" + command
+      card.addEventListener("click", function () {
+        copyText(command)
+      })
+
       wrap.appendChild(card)
     })
 
     host.appendChild(wrap)
+    host.appendChild(
+      el(
+        "div",
+        "cnb-hint",
+        "magpie 没有给插件页开放「切换账号」的接口（插件页只能读写插件选项）。点卡片复制切换命令，或者直接在 magpie 的供应商卡片里切。",
+      ),
+    )
     var first = document.querySelector("body > .cnb-section")
     if (first && first.parentNode) first.parentNode.insertBefore(host, first)
     else document.body.appendChild(host)

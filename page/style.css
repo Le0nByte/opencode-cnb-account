@@ -180,3 +180,5 @@ select.cnb-input { cursor: pointer; }
 .cnb-account-badge.off { color: var(--cnb-dim); }
 .cnb-account-line { margin-top: 6px; font-size: 12px; }
 .cnb-account-line.dim { color: var(--cnb-dim); }
+.cnb-account-card.clickable { cursor: pointer; }
+.cnb-account-card.clickable:hover { border-color: var(--cnb-accent); }
