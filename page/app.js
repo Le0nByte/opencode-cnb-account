@@ -718,6 +718,16 @@
       .then(function (theme) {
         applyTheme(theme)
         if (bridge && bridge.onTheme) bridge.onTheme(applyTheme)
+        // 本面板是 slot:provider —— 宿主把它注入到每一个供应商的编辑页。
+        // magpie.context 会说明现在在哪：{ provider: { id, name } }。
+        // 不是 cnb 自己的家就整块收起，别在别人的设置页里占一块。
+        var cx = (bridge && bridge.context) || {}
+        var pid = String((cx.provider && cx.provider.id) || "")
+        if (pid && pid !== "cnb") {
+          document.body.hidden = true
+          if (bridge.size) bridge.size(0)
+          return null
+        }
         // 再尝试拉运行时快照 state.js（不存在就保持默认，onerror 静默）
         return reloadState()
       })

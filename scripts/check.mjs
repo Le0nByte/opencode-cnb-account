@@ -339,6 +339,7 @@ ok("accountKeyOf 用 username", mod._internal.accountKeyOf(snapB) === "user-b")
 const appSrc = readFileSync(join(ROOT, "page/app.js"), "utf8")
 ok("卡片点击复制切换命令", /magpie accounts switch/.test(appSrc) && /card\.addEventListener\("click"/.test(appSrc))
 ok("明说插件页不能自己切账号", /没有给插件页开放/.test(appSrc))
+ok("panel 注入非 cnb 供应商页时整块收起", /provider\.id[^]*?!== "cnb"/.test(appSrc) && /document\.body\.hidden = true/.test(appSrc))
 
 // 二改：按账号的中继映射
 const optsMapped = mod._internal.normaliseOptions({
