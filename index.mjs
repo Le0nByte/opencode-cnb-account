@@ -116,6 +116,9 @@ const DEFAULT_OPTIONS = Object.freeze({
   repo: "",
   transport: "auto", // auto | relay | cookie
   relay: { url: RELAY_URL_DEFAULT, key: "" },
+  // 按账号的中继映射：{ "realleon": { url: "http://127.0.0.1:9201/v1", key: "" } }
+  // 键是 CNB 用户名；命中的账号用自己条目的 url/key，没命中的回落全局 relay。
+  relays: {},
   // CNBSESSION 直连通道的凭证。放插件选项里而不是账号里：
   // magpie 的 apiKey() 只在 auth.single=true 时覆盖老账号，否则永远新建账号，
   // 已登录用户根本没有「给现有账号补 CNBSESSION」的入口。选项可以由插件自己的页面写（options.set）。
@@ -154,6 +157,14 @@ function normaliseOptions(raw) {
   const relayUrl =
     src.relay && Object.prototype.hasOwnProperty.call(src.relay, "url") ? src.relay.url : RELAY_URL_DEFAULT
   out.relay = { url: String(relayUrl || "").trim(), key: String(src.relay?.key || "").trim() }
+  out.relays = {}
+  for (const [user, entry] of Object.entries(src.relays && typeof src.relays === "object" ? src.relays : {})) {
+    const name = String(user || "").trim()
+    const e = entry && typeof entry === "object" ? entry : {}
+    if (name && (String(e.url || "").trim() || String(e.key || "").trim())) {
+      out.relays[name] = { url: String(e.url || "").trim(), key: String(e.key || "").trim() }
+    }
+  }
   out.session = String(src.session || "").trim()
   out.csrfkey = String(src.csrfkey || "").trim()
   out.claim = {
@@ -458,11 +469,19 @@ function pickTransport(account, options) {
   if (options.transport === "relay" || options.transport === "cookie") return options.transport
   // auto 的顺序：中继 → CNBSESSION 直连 → 都没有。
   // 中继优先的理由：它支持 tools；cookie 通道上游结构性拒绝工具调用。
-  if (options.relay.url) return "relay"
+  if (relayFor(account, options).url) return "relay"
   if (sessionOf(account, options)) return "cookie"
   // 只剩访问令牌。个人令牌调不了模型（所有路径实测都是 403），
   // 所以不标成任何通道，直接要 CNBSESSION。
   return "need-session"
+}
+
+/** 本账号生效的中继：先查按账号的映射（键=CNB 用户名），没配就用全局 relay。 */
+function relayFor(account, options) {
+  const name = String(account?.username || "").trim()
+  const mapped = name ? options.relays?.[name] : null
+  if (mapped && (mapped.url || mapped.key)) return mapped
+  return options.relay
 }
 
 function repoPath(account, options) {
@@ -1909,9 +1928,12 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
 
         if (transport === "relay") {
           // 路线 A：中继机本身就是 OpenAI 兼容网关，直通即可。
-          const base = stripV1(options.relay.url || "")
-          if (!base) return { baseURL: WEB_BASE, apiKey: account.token || PROVIDER_ID }
-          return { baseURL: `${base}/v1`, apiKey: options.relay.key || PROVIDER_ID }
+          // 中继按账号取：映射命中用账号自己的 url/key，没命中回落全局 relay ——
+          // 这就是「Magpie 切账号 = 换中继 = 换额度池」的实现点。
+          const relay = relayFor(account, options)
+          const base = stripV1(relay.url || "")
+          if (!base) return { baseURL: WEB_BASE, apiKey: relay.key || PROVIDER_ID }
+          return { baseURL: `${base}/v1`, apiKey: relay.key || PROVIDER_ID }
         }
         if (transport === "need-session") {
           return {
@@ -1997,13 +2019,15 @@ const CnbAccountPlugin = async (_input, pluginOptions) => {
         }
         // 账号卡片上直接标出 AI 通道能不能用，别等发消息才炸
         const liveTransport = pickTransport(account, options)
-        const relayHost = stripV1(options.relay.url || "")
+        const relay = relayFor(account, options)
+        const relayHost = stripV1(relay.url || "")
+        const perAccount = relay !== options.relay
         windows.push({
           name: "AI 通道",
           aside: true,
           display:
             liveTransport === "relay"
-              ? `中继 ${relayHost}${options.relay.key ? "" : "（缺 Key）"} · 支持 tools`
+              ? `中继 ${relayHost}${relay.key ? "" : "（缺 Key）"}${perAccount ? "（本账号专用）" : "（全局）"} · 支持 tools`
               : liveTransport === "cookie"
                 ? `CNBSESSION 直连 · ${options.session ? "页面填的" : "账号自带"} · 不支持 tools`
                 : "未配置：在「CNB 账户」页填中继地址或 CNBSESSION",
@@ -2306,6 +2330,7 @@ export const _internal = Object.freeze({
   ensureCsrf,
   sessionOf,
   csrfSeedOf,
+  relayFor,
   loginViaDevice,
   pollDeviceToken,
   requestDeviceCode,

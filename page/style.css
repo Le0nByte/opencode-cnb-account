@@ -183,3 +183,8 @@ select.cnb-input { cursor: pointer; }
 .cnb-account-card.clickable { cursor: pointer; }
 .cnb-account-card.clickable:hover { border-color: var(--cnb-accent); }
 .cnb-accounts .cnb-hint { margin-top: 10px; font-size: 12px; color: var(--cnb-dim); }
+.cnb-relay-map { display: grid; gap: 6px; margin-top: 6px; }
+.cnb-relay-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.cnb-relay-user { min-width: 110px; font-weight: 600; font-size: 12px; }
+.cnb-relay-row .cnb-input { flex: 1 1 160px; min-width: 0; }
+.cnb.small, button.cnb.small { padding: 2px 8px; font-size: 12px; }

@@ -340,6 +340,23 @@ const appSrc = readFileSync(join(ROOT, "page/app.js"), "utf8")
 ok("卡片点击复制切换命令", /magpie accounts switch/.test(appSrc) && /card\.addEventListener\("click"/.test(appSrc))
 ok("明说插件页不能自己切账号", /没有给插件页开放/.test(appSrc))
 
+// 二改：按账号的中继映射
+const optsMapped = mod._internal.normaliseOptions({
+  relay: { url: "" },
+  relays: { realleon: { url: "http://127.0.0.1:9201/v1", key: "k1" }, junk: "x", "": { url: "http://x" } },
+})
+ok("relays 保留有效条目", optsMapped.relays.realleon?.url === "http://127.0.0.1:9201/v1" && optsMapped.relays.realleon?.key === "k1", JSON.stringify(optsMapped.relays))
+ok("relays 丢弃无效条目", !("junk" in optsMapped.relays) && !("" in optsMapped.relays))
+const accA = { username: "realleon" }
+const accB = { username: "killai" }
+ok("命中映射的账号用专用中继", mod._internal.relayFor(accA, optsMapped).url === "http://127.0.0.1:9201/v1")
+ok("未命中映射的账号回落全局 relay", mod._internal.relayFor(accB, optsMapped) === optsMapped.relay)
+ok("无用户名的账号也回落全局", mod._internal.relayFor({ username: "" }, optsMapped) === optsMapped.relay)
+const optsNoMap = mod._internal.normaliseOptions({ relay: { url: "http://127.0.0.1:3000/v1" } })
+ok("没有映射时全部走全局", mod._internal.relayFor(accA, optsNoMap) === optsNoMap.relay)
+ok("pickTransport 有映射也判 relay", mod._internal.pickTransport(accA, optsMapped) === "relay")
+ok("loader 中继 apiKey 优先 relay.key", /relay\.key \|\| PROVIDER_ID/.test(readFileSync(join(ROOT, "index.mjs"), "utf8")))
+
 const credit = buildCreditView(
   { credit_in_milli: { total: 1_166_000, free: 500_000 } },
   { credit_in_milli: 250_000 },

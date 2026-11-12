@@ -549,6 +549,84 @@
       }, "AI 通道已保存")
     })
 
+    // --- 按账号的中继映射 ------------------------------------------------
+    // 每个 CNB 用户名一条：{ 用户名: {url, key} }。切账号 = 换中继 = 换额度池。
+    function renderRelayMap(current) {
+      var box = document.getElementById("cnb-relay-map")
+      if (box) box.parentNode.removeChild(box)
+      box = el("div", "cnb-relay-map")
+      box.id = "cnb-relay-map"
+      var book = (current && current.relays) || {}
+      var names = Object.keys(book)
+      host.appendChild(el("div", "cnb-label", "按账号的中继（键 = CNB 用户名；切账号 = 换中继 = 换额度池）"))
+      if (!names.length) host.appendChild(el("div", "cnb-hint", "还没有按账号的映射。所有账号都走上面的全局中继。"))
+      names.forEach(function (name) {
+        var row = el("div", "cnb-relay-row")
+        var tag = el("span", "cnb-relay-user", name)
+        var urlIn = inputBox("text", "http://127.0.0.1:9201/v1")
+        urlIn.value = book[name].url || ""
+        var keyIn = inputBox("password", book[name].key ? "已保存（" + String(book[name].key).length + " 字符），留空不改" : "中继 Key（留空不改）")
+        var del = el("button", "cnb small", "删除")
+        del.addEventListener("click", function () {
+          persist(function (next) {
+            delete next.relays[name]
+          }, "已删除账号 " + name + " 的中继映射")
+          renderRelayMap(Object.assign({}, current, { relays: minusKey(book, name) }))
+        })
+        var upd = el("button", "cnb primary small", "更新")
+        upd.addEventListener("click", function () {
+          persist(function (next) {
+            next.relays = next.relays || {}
+            next.relays[name] = { url: urlIn.value.trim(), key: keyIn.value.trim() ? keyIn.value.trim() : (next.relays[name] || {}).key || "" }
+          }, "已更新账号 " + name + " 的中继")
+        })
+        row.appendChild(tag)
+        row.appendChild(urlIn)
+        row.appendChild(keyIn)
+        row.appendChild(upd)
+        row.appendChild(del)
+        box.appendChild(row)
+      })
+
+      var addRow = el("div", "cnb-relay-row")
+      var nameIn = inputBox("text", "CNB 用户名，如 realleon")
+      var urlIn = inputBox("text", "http://127.0.0.1:9201/v1")
+      var keyIn = inputBox("password", "中继 Key（可留空）")
+      var add = el("button", "cnb primary small", "添加")
+      add.addEventListener("click", function () {
+        var name = nameIn.value.trim()
+        if (!name) {
+          toast("先填 CNB 用户名")
+          return
+        }
+        persist(function (next) {
+          next.relays = next.relays || {}
+          next.relays[name] = { url: urlIn.value.trim(), key: keyIn.value.trim() }
+        }, "已添加账号 " + name + " 的中继")
+        renderRelayMap(Object.assign({}, current, { relays: plusEntry(book, name, { url: urlIn.value.trim(), key: "…" }) }))
+        nameIn.value = ""
+        urlIn.value = ""
+        keyIn.value = ""
+      })
+      addRow.appendChild(nameIn)
+      addRow.appendChild(urlIn)
+      addRow.appendChild(keyIn)
+      addRow.appendChild(add)
+      box.appendChild(addRow)
+      host.appendChild(box)
+    }
+
+    function minusKey(obj, key) {
+      var o = Object.assign({}, obj)
+      delete o[key]
+      return o
+    }
+    function plusEntry(obj, key, entry) {
+      var o = Object.assign({}, obj)
+      o[key] = entry
+      return o
+    }
+
     clearSession.addEventListener("click", function () {
       persist(function (next) {
         next.session = ""
@@ -575,6 +653,7 @@
     api.get().then(fill).catch(function (e) {
       status.textContent = "读取插件选项失败：" + (e && e.message ? e.message : e)
     })
+    api.get().then(renderRelayMap).catch(function () {})
 
     insertChannelSection(host)
   }
